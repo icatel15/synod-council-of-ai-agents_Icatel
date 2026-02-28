@@ -156,9 +156,9 @@ export const PROVIDERS: ProviderInfo[] = [
     name: 'Google',
     keychainService: 'com.council-of-ai-agents.google',
     models: [
-      { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
-      { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Flash Lite' },
-      { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
+      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
+      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+      { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite' },
     ],
     apiKeyUrl: 'https://aistudio.google.com/apikey',
     apiKeySteps: [
