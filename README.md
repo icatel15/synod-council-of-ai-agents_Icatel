@@ -28,7 +28,7 @@ You ask a question, and your council of AI models responds one by one — each s
 ## Features
 
 ### Council Discussion
-- **8 providers, 30+ models** — Anthropic, OpenAI, Google, xAI, DeepSeek, Mistral, Together AI, and Cohere
+- **8 providers, 30 models** — Anthropic, OpenAI, Google, xAI, DeepSeek, Mistral, Together AI, and Cohere
 - **Sequential deliberation** — each model sees the original question plus every previous response
 - **Master verdict** — a designated model synthesizes all opinions into a final recommendation
 - **Clarifying questions** — the first council member can ask up to 2 clarifying questions before proceeding
