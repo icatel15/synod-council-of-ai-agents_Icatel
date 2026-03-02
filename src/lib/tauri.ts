@@ -7,6 +7,7 @@ import type {
   Session,
   SessionSummary,
   StreamToken,
+  StreamChatResult,
 } from '../types';
 
 // Keychain commands
@@ -34,7 +35,7 @@ export async function streamChat(
   systemPrompt: string | null,
   apiKey: string,
   streamId: string,
-): Promise<string> {
+): Promise<StreamChatResult> {
   return invoke('stream_chat', {
     provider,
     model,

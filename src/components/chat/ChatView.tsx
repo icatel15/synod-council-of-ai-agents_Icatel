@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { Send, Sparkles } from 'lucide-react';
+import { Send } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import UserMessage from './UserMessage';
 import ModelResponse from './ModelResponse';
@@ -82,7 +82,7 @@ export default function ChatView() {
 
       const streamId = uuidv4();
       const unlisten = await onStreamToken(streamId, () => {});
-      const title = await streamChat(
+      const result = await streamChat(
         currentSettings.masterModel.provider as any,
         currentSettings.masterModel.model,
         [
@@ -97,7 +97,7 @@ export default function ChatView() {
       );
       unlisten();
 
-      const cleanTitle = title.trim().replace(/^["']|["']$/g, '');
+      const cleanTitle = result.content.trim().replace(/^["']|["']$/g, '');
       if (cleanTitle) {
         updateSessionRef.current({ title: cleanTitle });
         saveSessionRef.current(settingsRef.current.sessionSavePath).catch(console.error);
@@ -155,6 +155,7 @@ export default function ChatView() {
       settings.councilModels,
       settings.masterModel,
       settings.systemPromptMode,
+      settings.discussionDepth,
       getApiKey,
       handleEntryComplete,
     );
@@ -201,9 +202,11 @@ export default function ChatView() {
                 transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
                 className="text-center max-w-lg"
               >
-                <div className="w-16 h-16 rounded-2xl bg-[var(--color-accent-light)] flex items-center justify-center mx-auto mb-6">
-                  <Sparkles size={28} className="text-[var(--color-accent)]" />
-                </div>
+                <img
+                  src="/synod-icon.png"
+                  alt="Synod"
+                  className="w-16 h-16 rounded-2xl mx-auto mb-6"
+                />
                 <h1 className="text-2xl font-semibold text-[var(--color-text-primary)] mb-1">
                   Synod
                 </h1>

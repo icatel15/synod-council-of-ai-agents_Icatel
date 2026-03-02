@@ -1,5 +1,5 @@
 import { useSettingsStore } from '../../stores/settingsStore';
-import type { SystemPromptMode } from '../../types';
+import type { SystemPromptMode, DiscussionDepth } from '../../types';
 
 export default function AdvancedSettings() {
   const { settings, updateSettings } = useSettingsStore();
@@ -19,8 +19,57 @@ export default function AdvancedSettings() {
     },
   ];
 
+  const depths: { id: DiscussionDepth; label: string; description: string }[] = [
+    {
+      id: 'thorough',
+      label: 'Thorough',
+      description:
+        'Models provide detailed analysis with comprehensive explanations. Best for complex decisions (uses more tokens).',
+    },
+    {
+      id: 'concise',
+      label: 'Concise',
+      description:
+        'Models give brief, focused responses with 2-3 key points only. Great for quick insights (saves tokens).',
+    },
+  ];
+
   return (
     <div>
+      <h3 className="text-sm font-semibold text-[var(--color-text-primary)] mb-1">
+        Discussion Depth
+      </h3>
+      <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
+        Control how detailed the council's responses should be
+      </p>
+
+      <div className="space-y-2 mb-6">
+        {depths.map((depth) => (
+          <button
+            key={depth.id}
+            onClick={() => updateSettings({ discussionDepth: depth.id })}
+            className={`w-full text-left p-3 rounded-[var(--radius-md)] border transition-all ${
+              settings.discussionDepth === depth.id
+                ? 'border-[var(--color-accent)] bg-[var(--color-accent-light)]'
+                : 'border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)] bg-[var(--color-bg-secondary)]'
+            }`}
+          >
+            <span
+              className={`text-sm font-medium ${
+                settings.discussionDepth === depth.id
+                  ? 'text-[var(--color-accent)]'
+                  : 'text-[var(--color-text-primary)]'
+              }`}
+            >
+              {depth.label}
+            </span>
+            <p className="text-xs text-[var(--color-text-tertiary)] mt-1">
+              {depth.description}
+            </p>
+          </button>
+        ))}
+      </div>
+
       <h3 className="text-sm font-semibold text-[var(--color-text-primary)] mb-1">
         System Prompt Generation
       </h3>

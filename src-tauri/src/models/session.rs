@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::config::{MasterModelConfig, ModelConfig, SystemPromptMode};
+use super::config::{MasterModelConfig, ModelConfig, SystemPromptMode, UsageData};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,12 +28,18 @@ pub enum DiscussionEntry {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         clarifying_exchange: Option<Vec<ClarifyingExchange>>,
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<UsageData>,
     },
     #[serde(rename = "master_verdict")]
     MasterVerdict {
         provider: String,
         model: String,
         content: String,
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<UsageData>,
     },
 }
 

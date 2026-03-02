@@ -150,9 +150,24 @@ pub struct StreamRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UsageData {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamToken {
     pub stream_id: String,
     pub token: String,
     pub done: bool,
     pub error: Option<String>,
+    pub usage: Option<UsageData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamChatResult {
+    pub content: String,
+    pub usage: Option<UsageData>,
 }

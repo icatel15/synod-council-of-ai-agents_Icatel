@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, ChevronLeft, Sparkles, Check } from 'lucide-react';
+import { ChevronRight, ChevronLeft, Check } from 'lucide-react';
 import Button from '../common/Button';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { PROVIDERS, getProviderColor } from '../../types';
@@ -112,9 +112,11 @@ export default function SetupWizard() {
           >
             {currentStep === 'welcome' && (
               <div className="text-center">
-                <div className="w-16 h-16 rounded-2xl bg-[var(--color-accent-light)] flex items-center justify-center mx-auto mb-6">
-                  <Sparkles size={28} className="text-[var(--color-accent)]" />
-                </div>
+                <img
+                  src="/synod-icon.png"
+                  alt="Synod"
+                  className="w-16 h-16 rounded-2xl mx-auto mb-6"
+                />
                 <h1 className="text-2xl font-bold text-[var(--color-text-primary)] mb-1">
                   Welcome to Synod
                 </h1>

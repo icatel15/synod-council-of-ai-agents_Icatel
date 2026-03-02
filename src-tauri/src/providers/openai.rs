@@ -1,11 +1,9 @@
 use anyhow::{anyhow, Result};
-use bytes::Bytes;
-use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
 
 use crate::models::config::ChatMessage;
-use super::TokenStream;
+use super::{parse_sse_stream, StreamEvent, TokenStream, UsageData};
 
 pub struct OpenAIProvider {
     client: Client,
@@ -44,7 +42,8 @@ impl OpenAIProvider {
         let body = json!({
             "model": model,
             "messages": api_messages,
-            "stream": true
+            "stream": true,
+            "stream_options": { "include_usage": true }
         });
 
         let response = self
@@ -68,34 +67,27 @@ impl OpenAIProvider {
 
         let byte_stream = response.bytes_stream();
 
-        let token_stream = byte_stream
-            .map(|chunk_result| -> Result<Vec<String>> {
-                let chunk: Bytes = chunk_result.map_err(|e| anyhow!("Stream error: {}", e))?;
-                let text = String::from_utf8_lossy(&chunk);
-                let mut tokens = Vec::new();
+        Ok(parse_sse_stream(byte_stream, |event| {
+            let mut events = Vec::new();
 
-                for line in text.lines() {
-                    if let Some(data) = line.strip_prefix("data: ") {
-                        if data == "[DONE]" {
-                            continue;
-                        }
-                        if let Ok(event) = serde_json::from_str::<Value>(data) {
-                            if let Some(content) =
-                                event["choices"][0]["delta"]["content"].as_str()
-                            {
-                                tokens.push(content.to_string());
-                            }
-                        }
-                    }
+            if let Some(content) = event["choices"][0]["delta"]["content"].as_str() {
+                events.push(StreamEvent::Token(content.to_string()));
+            }
+
+            // Extract usage from the final chunk (requires stream_options.include_usage)
+            if let Some(usage) = event.get("usage") {
+                if let (Some(input), Some(output)) = (
+                    usage["prompt_tokens"].as_u64(),
+                    usage["completion_tokens"].as_u64(),
+                ) {
+                    events.push(StreamEvent::Usage(UsageData {
+                        input_tokens: input as u32,
+                        output_tokens: output as u32,
+                    }));
                 }
+            }
 
-                Ok(tokens)
-            })
-            .flat_map(|result| match result {
-                Ok(tokens) => stream::iter(tokens.into_iter().map(Ok).collect::<Vec<_>>()),
-                Err(e) => stream::iter(vec![Err(e)]),
-            });
-
-        Ok(Box::pin(token_stream))
+            events
+        }))
     }
 }

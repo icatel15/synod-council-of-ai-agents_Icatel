@@ -1,11 +1,11 @@
 use futures::StreamExt;
 use tauri::{command, AppHandle, Emitter};
 
-use crate::models::config::{ChatMessage, Provider, StreamToken};
+use crate::models::config::{ChatMessage, Provider, StreamChatResult, StreamToken, UsageData};
 use crate::providers::{
     anthropic::AnthropicProvider, cohere::CohereProvider, deepseek::DeepSeekProvider,
     google::GoogleProvider, mistral::MistralProvider, openai::OpenAIProvider,
-    together::TogetherProvider, xai::XAIProvider,
+    together::TogetherProvider, xai::XAIProvider, StreamEvent,
 };
 
 #[command]
@@ -17,7 +17,7 @@ pub async fn stream_chat(
     system_prompt: Option<String>,
     api_key: String,
     stream_id: String,
-) -> Result<String, String> {
+) -> Result<StreamChatResult, String> {
     let system_ref = system_prompt.as_deref();
     let event_name = format!("stream-token-{}", stream_id);
 
@@ -59,10 +59,14 @@ pub async fn stream_chat(
     match result {
         Ok(mut stream) => {
             let mut full_response = String::new();
+            let mut accumulated_usage = UsageData {
+                input_tokens: 0,
+                output_tokens: 0,
+            };
 
-            while let Some(token_result) = stream.next().await {
-                match token_result {
-                    Ok(token) => {
+            while let Some(event_result) = stream.next().await {
+                match event_result {
+                    Ok(StreamEvent::Token(token)) => {
                         full_response.push_str(&token);
                         let _ = app.emit(
                             &event_name,
@@ -71,8 +75,19 @@ pub async fn stream_chat(
                                 token,
                                 done: false,
                                 error: None,
+                                usage: None,
                             },
                         );
+                    }
+                    Ok(StreamEvent::Usage(usage)) => {
+                        // Use MAX rather than SUM: Anthropic sends input/output in separate events
+                        // (input=25,output=0 then input=0,output=150 → max gives 25,150 ✓)
+                        // Google sends cumulative totals in every chunk
+                        // (input=10,output=5 then input=10,output=50 → max gives 10,50 ✓)
+                        // OpenAI/others send a single event → max works the same as sum
+                        eprintln!("[USAGE] {:?} received: input={}, output={}", provider, usage.input_tokens, usage.output_tokens);
+                        accumulated_usage.input_tokens = accumulated_usage.input_tokens.max(usage.input_tokens);
+                        accumulated_usage.output_tokens = accumulated_usage.output_tokens.max(usage.output_tokens);
                     }
                     Err(e) => {
                         let _ = app.emit(
@@ -82,6 +97,7 @@ pub async fn stream_chat(
                                 token: String::new(),
                                 done: true,
                                 error: Some(e.to_string()),
+                                usage: None,
                             },
                         );
                         return Err(e.to_string());
@@ -89,6 +105,7 @@ pub async fn stream_chat(
                 }
             }
 
+            // Emit final done event
             let _ = app.emit(
                 &event_name,
                 StreamToken {
@@ -96,10 +113,21 @@ pub async fn stream_chat(
                     token: String::new(),
                     done: true,
                     error: None,
+                    usage: None,
                 },
             );
 
-            Ok(full_response)
+            let final_usage = if accumulated_usage.input_tokens > 0 || accumulated_usage.output_tokens > 0 {
+                Some(accumulated_usage)
+            } else {
+                None
+            };
+
+            // Return usage via invoke response (reliable, no race condition with events)
+            Ok(StreamChatResult {
+                content: full_response,
+                usage: final_usage,
+            })
         }
         Err(e) => {
             let _ = app.emit(
@@ -109,6 +137,7 @@ pub async fn stream_chat(
                     token: String::new(),
                     done: true,
                     error: Some(e.to_string()),
+                    usage: None,
                 },
             );
             Err(e.to_string())

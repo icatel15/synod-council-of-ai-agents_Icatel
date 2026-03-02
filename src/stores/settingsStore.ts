@@ -17,6 +17,7 @@ const defaultSettings: AppSettings = {
   councilModels: [],
   masterModel: { provider: 'anthropic', model: 'claude-opus-4-6' },
   systemPromptMode: 'upfront',
+  discussionDepth: 'thorough',
   theme: 'system',
   cursorStyle: 'orbit',
   sessionSavePath: null,
@@ -31,7 +32,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   loadSettings: async () => {
     set({ loading: true });
     try {
-      const settings = await tauri.loadSettings();
+      const loaded = await tauri.loadSettings();
+      const settings = { ...defaultSettings, ...loaded };
       set({ settings, loaded: true, loading: false });
       applyTheme(settings.theme);
 

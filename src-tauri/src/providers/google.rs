@@ -1,11 +1,9 @@
 use anyhow::{anyhow, Result};
-use bytes::Bytes;
-use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
 
 use crate::models::config::ChatMessage;
-use super::TokenStream;
+use super::{parse_sse_stream, StreamEvent, TokenStream, UsageData};
 
 pub struct GoogleProvider {
     client: Client,
@@ -74,33 +72,37 @@ impl GoogleProvider {
 
         let byte_stream = response.bytes_stream();
 
-        let token_stream = byte_stream
-            .map(|chunk_result| -> Result<Vec<String>> {
-                let chunk: Bytes = chunk_result.map_err(|e| anyhow!("Stream error: {}", e))?;
-                let text = String::from_utf8_lossy(&chunk);
-                let mut tokens = Vec::new();
+        Ok(parse_sse_stream(byte_stream, |event| {
+            let mut events = Vec::new();
 
-                for line in text.lines() {
-                    if let Some(data) = line.strip_prefix("data: ") {
-                        if let Ok(event) = serde_json::from_str::<Value>(data) {
-                            if let Some(parts) = event["candidates"][0]["content"]["parts"].as_array() {
-                                for part in parts {
-                                    if let Some(text) = part["text"].as_str() {
-                                        tokens.push(text.to_string());
-                                    }
-                                }
-                            }
-                        }
+            if let Some(parts) = event["candidates"][0]["content"]["parts"].as_array() {
+                for part in parts {
+                    if let Some(text) = part["text"].as_str() {
+                        events.push(StreamEvent::Token(text.to_string()));
                     }
                 }
+            }
 
-                Ok(tokens)
-            })
-            .flat_map(|result| match result {
-                Ok(tokens) => stream::iter(tokens.into_iter().map(Ok).collect::<Vec<_>>()),
-                Err(e) => stream::iter(vec![Err(e)]),
-            });
+            // Google sends usageMetadata (possibly in every chunk with cumulative values).
+            // Handle missing fields gracefully — either field may be absent in intermediate chunks.
+            if let Some(usage) = event.get("usageMetadata") {
+                let input = usage
+                    .get("promptTokenCount")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let output = usage
+                    .get("candidatesTokenCount")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                if input > 0 || output > 0 {
+                    events.push(StreamEvent::Usage(UsageData {
+                        input_tokens: input as u32,
+                        output_tokens: output as u32,
+                    }));
+                }
+            }
 
-        Ok(Box::pin(token_stream))
+            events
+        }))
     }
 }

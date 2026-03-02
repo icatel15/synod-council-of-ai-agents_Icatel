@@ -3,9 +3,11 @@ import { v4 as uuidv4 } from 'uuid';
 import type {
   CouncilState,
   DiscussionEntry,
+  DiscussionDepth,
   ModelConfig,
   ChatMessage,
   ClarifyingExchange,
+  UsageData,
 } from '../types';
 import * as tauri from '../lib/tauri';
 
@@ -25,6 +27,7 @@ interface CouncilStoreState {
     models: ModelConfig[],
     masterModel: { provider: string; model: string },
     systemPromptMode: 'upfront' | 'dynamic',
+    discussionDepth: DiscussionDepth,
     getApiKey: (service: string) => Promise<string | null>,
     onEntryComplete: (entry: DiscussionEntry) => void,
   ) => Promise<void>;
@@ -48,6 +51,7 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
     models,
     masterModel,
     systemPromptMode,
+    discussionDepth,
     getApiKey,
     onEntryComplete,
   ) => {
@@ -59,6 +63,9 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
     const discussionSoFar: DiscussionEntry[] = [
       { role: 'user', content: userQuestion },
     ];
+
+    // Track master model usage across prompt generation + verdict
+    let masterPromptGenUsage: UsageData | undefined;
 
     // Generate system prompts if upfront mode
     if (systemPromptMode === 'upfront') {
@@ -85,7 +92,7 @@ ${models.map((m, i) => `${i + 1}. ${m.displayName} (${m.provider})`).join('\n')}
 Generate a specific, tailored system prompt for EACH council model that helps them provide their best analysis. The first model (${models[0]?.displayName}) should be instructed that it MAY ask up to 2 clarifying questions if needed. All other models should be told they CANNOT ask questions.
 
 Each model should be encouraged to provide unique perspectives and not just repeat previous opinions.
-
+${discussionDepth === 'concise' ? '\nIMPORTANT: Instruct each model to keep responses brief and focused — 2-3 key points maximum. No lengthy explanations.\n' : ''}
 Return your response in this exact JSON format:
 ${JSON.stringify(
   models.reduce(
@@ -112,7 +119,7 @@ ${JSON.stringify(
 
         set({ currentStreamId: streamId, currentStreamContent: '' });
 
-        const response = await tauri.streamChat(
+        const result = await tauri.streamChat(
           masterModel.provider as any,
           masterModel.model,
           promptGenMessages,
@@ -123,10 +130,11 @@ ${JSON.stringify(
 
         unlisten();
         set({ currentStreamId: null, currentStreamContent: '' });
+        masterPromptGenUsage = result.usage;
 
         // Parse the JSON response
         try {
-          const jsonMatch = response.match(/\{[\s\S]*\}/);
+          const jsonMatch = result.content.match(/\{[\s\S]*\}/);
           if (jsonMatch) {
             const prompts = JSON.parse(jsonMatch[0]);
             const promptMap = new Map<string, string>();
@@ -175,7 +183,7 @@ ${JSON.stringify(
         // Get system prompt
         const systemPromptKey = `${model.provider}:${model.model}`;
         let systemPrompt =
-          get().systemPrompts.get(systemPromptKey) || getDefaultSystemPrompt(model, i === 0);
+          get().systemPrompts.get(systemPromptKey) || getDefaultSystemPrompt(model, i === 0, discussionDepth);
 
         // Dynamic mode: generate prompt for this model
         if (systemPromptMode === 'dynamic' && i > 0) {
@@ -189,7 +197,7 @@ ${JSON.stringify(
                 dynamicStreamId,
                 () => {},
               );
-              const dynamicPrompt = await tauri.streamChat(
+              const dynamicResult = await tauri.streamChat(
                 masterModel.provider as any,
                 masterModel.model,
                 [
@@ -203,7 +211,15 @@ ${JSON.stringify(
                 dynamicStreamId,
               );
               dynamicUnlisten();
-              systemPrompt = dynamicPrompt;
+              systemPrompt = dynamicResult.content;
+              // Accumulate dynamic prompt gen usage with master usage
+              if (dynamicResult.usage) {
+                if (!masterPromptGenUsage) {
+                  masterPromptGenUsage = { inputTokens: 0, outputTokens: 0 };
+                }
+                masterPromptGenUsage.inputTokens += dynamicResult.usage.inputTokens;
+                masterPromptGenUsage.outputTokens += dynamicResult.usage.outputTokens;
+              }
             }
           } catch {
             // Fall back to default prompt
@@ -222,7 +238,7 @@ ${JSON.stringify(
           }
         });
 
-        const response = await tauri.streamChat(
+        const result = await tauri.streamChat(
           model.provider,
           model.model,
           messages,
@@ -235,11 +251,11 @@ ${JSON.stringify(
         set({ currentStreamId: null, currentStreamContent: '' });
 
         // Check if first model asked a clarifying question
-        if (i === 0 && looksLikeClarifyingQuestion(response)) {
+        if (i === 0 && looksLikeClarifyingQuestion(result.content)) {
           set({
             state: 'clarifying_qa',
             waitingForClarification: true,
-            clarifyingExchanges: [{ question: response, answer: '' }],
+            clarifyingExchanges: [{ question: result.content, answer: '' }],
           });
 
           // Wait for user's clarification answer
@@ -260,7 +276,7 @@ ${JSON.stringify(
             // Get follow-up response from the first model
             const followUpMessages: ChatMessage[] = [
               ...messages,
-              { role: 'assistant', content: response },
+              { role: 'assistant', content: result.content },
               { role: 'user', content: clarifyAnswer },
             ];
 
@@ -282,7 +298,7 @@ ${JSON.stringify(
               },
             );
 
-            const followUpResponse = await tauri.streamChat(
+            const followUpResult = await tauri.streamChat(
               model.provider,
               model.model,
               followUpMessages,
@@ -294,17 +310,21 @@ ${JSON.stringify(
             followUpUnlisten();
             set({ currentStreamId: null, currentStreamContent: '' });
 
+            // Combine initial question usage + follow-up usage
+            const combinedUsage = combineUsage(result.usage, followUpResult.usage);
+
             const entry: DiscussionEntry = {
               role: 'model',
               provider: model.provider,
               model: model.model,
               displayName: model.displayName,
               systemPrompt,
-              content: followUpResponse,
+              content: followUpResult.content,
               clarifyingExchange: exchanges.map((e) => ({
                 question: e.question,
                 answer: e.answer,
               })),
+              usage: combinedUsage,
             };
             discussionSoFar.push(entry);
             onEntryComplete(entry);
@@ -316,7 +336,8 @@ ${JSON.stringify(
             model: model.model,
             displayName: model.displayName,
             systemPrompt,
-            content: response,
+            content: result.content,
+            usage: result.usage,
           };
           discussionSoFar.push(entry);
           onEntryComplete(entry);
@@ -368,11 +389,15 @@ ${JSON.stringify(
         }
       });
 
-      const verdictResponse = await tauri.streamChat(
+      const masterSystemPrompt = discussionDepth === 'concise'
+        ? `You are the master AI judge in a council of AI models. You have reviewed all council members' opinions on the user's question. Deliver a brief, focused verdict in 3-5 sentences. Highlight only the key takeaway and recommended action. No lengthy sections.`
+        : `You are the master AI judge in a council of AI models. You have reviewed all council members' opinions on the user's question. Your job is to synthesize the best advice, resolve any disagreements, and deliver a clear, actionable final verdict. Be thorough but concise. Structure your response with clear sections.`;
+
+      const verdictResult = await tauri.streamChat(
         masterModel.provider as any,
         masterModel.model,
         verdictMessages,
-        `You are the master AI judge in a council of AI models. You have reviewed all council members' opinions on the user's question. Your job is to synthesize the best advice, resolve any disagreements, and deliver a clear, actionable final verdict. Be thorough but concise. Structure your response with clear sections.`,
+        masterSystemPrompt,
         masterApiKey,
         streamId,
       );
@@ -380,11 +405,15 @@ ${JSON.stringify(
       unlisten();
       set({ currentStreamId: null, currentStreamContent: '' });
 
+      // Combine prompt generation usage + verdict usage for master model total
+      const masterTotalUsage = combineUsage(masterPromptGenUsage, verdictResult.usage);
+
       const verdictEntry: DiscussionEntry = {
         role: 'master_verdict',
         provider: masterModel.provider,
         model: masterModel.model,
-        content: verdictResponse,
+        content: verdictResult.content,
+        usage: masterTotalUsage,
       };
       onEntryComplete(verdictEntry);
 
@@ -450,11 +479,15 @@ function buildContextMessages(
   return messages;
 }
 
-function getDefaultSystemPrompt(model: ModelConfig, isFirst: boolean): string {
+function getDefaultSystemPrompt(model: ModelConfig, isFirst: boolean, depth: DiscussionDepth = 'thorough'): string {
+  const depthInstruction = depth === 'concise'
+    ? 'Be concise and direct. Provide 2-3 key points maximum. Skip lengthy explanations and focus on actionable insights.'
+    : 'Be thorough, factual, and specific.';
+
   if (isFirst) {
-    return `You are ${model.displayName}, a member of an AI council helping a user make an informed decision. You are the FIRST model to respond. You may ask up to 2 brief clarifying questions if the user's question is ambiguous or missing important details. If the question is clear enough, proceed directly with your analysis and recommendation. Be thorough, factual, and specific.`;
+    return `You are ${model.displayName}, a member of an AI council helping a user make an informed decision. You are the FIRST model to respond. You may ask up to 2 brief clarifying questions if the user's question is ambiguous or missing important details. If the question is clear enough, proceed directly with your analysis and recommendation. ${depthInstruction}`;
   }
-  return `You are ${model.displayName}, a member of an AI council helping a user make an informed decision. You will see the user's question and previous council members' responses. Provide your own unique perspective and analysis. Do NOT ask any questions to the user. Be thorough, factual, and specific. If you agree with previous members, explain why. If you disagree, explain your reasoning.`;
+  return `You are ${model.displayName}, a member of an AI council helping a user make an informed decision. You will see the user's question and previous council members' responses. Provide your own unique perspective and analysis. Do NOT ask any questions to the user. ${depthInstruction} If you agree with previous members, explain why. If you disagree, explain your reasoning.`;
 }
 
 function looksLikeClarifyingQuestion(response: string): boolean {
@@ -472,6 +505,14 @@ function looksLikeClarifyingQuestion(response: string): boolean {
   return questionIndicators.some((indicator) =>
     lowerResponse.includes(indicator),
   ) && response.includes('?');
+}
+
+function combineUsage(a?: UsageData, b?: UsageData): UsageData | undefined {
+  if (!a && !b) return undefined;
+  return {
+    inputTokens: (a?.inputTokens ?? 0) + (b?.inputTokens ?? 0),
+    outputTokens: (a?.outputTokens ?? 0) + (b?.outputTokens ?? 0),
+  };
 }
 
 function buildMasterVerdictPrompt(

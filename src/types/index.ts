@@ -14,6 +14,8 @@ export interface MasterModelConfig {
 
 export type SystemPromptMode = 'upfront' | 'dynamic';
 
+export type DiscussionDepth = 'thorough' | 'concise';
+
 export type ThemeMode = 'light' | 'dark' | 'system';
 
 export type CursorStyle = 'ripple' | 'breathing' | 'orbit' | 'multi';
@@ -22,6 +24,7 @@ export interface AppSettings {
   councilModels: ModelConfig[];
   masterModel: MasterModelConfig;
   systemPromptMode: SystemPromptMode;
+  discussionDepth: DiscussionDepth;
   theme: ThemeMode;
   cursorStyle: CursorStyle;
   sessionSavePath: string | null;
@@ -31,6 +34,11 @@ export interface AppSettings {
 export interface ChatMessage {
   role: string;
   content: string;
+}
+
+export interface UsageData {
+  inputTokens: number;
+  outputTokens: number;
 }
 
 export interface ClarifyingExchange {
@@ -51,6 +59,7 @@ export interface DiscussionEntryModel {
   systemPrompt?: string;
   content: string;
   clarifyingExchange?: ClarifyingExchange[];
+  usage?: UsageData;
 }
 
 export interface DiscussionEntryMasterVerdict {
@@ -58,6 +67,7 @@ export interface DiscussionEntryMasterVerdict {
   provider: string;
   model: string;
   content: string;
+  usage?: UsageData;
 }
 
 export type DiscussionEntry =
@@ -93,6 +103,12 @@ export interface StreamToken {
   token: string;
   done: boolean;
   error?: string;
+  usage?: UsageData;
+}
+
+export interface StreamChatResult {
+  content: string;
+  usage?: UsageData;
 }
 
 export type CouncilState =
