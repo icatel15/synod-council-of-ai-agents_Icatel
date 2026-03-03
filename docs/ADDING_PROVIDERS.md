@@ -180,9 +180,9 @@ case 'your_provider':
   return '#HEX_COLOR';
 ```
 
-## Step 5: Add Keychain Migration Entry
+## Step 5: Add Keychain Migration Entry (macOS)
 
-In `src-tauri/src/commands/keychain.rs`, add your provider to the `LEGACY_SERVICES` array:
+In `src-tauri/src/commands/keychain.rs`, add your provider to the `LEGACY_SERVICES` array (used for migrating old per-provider macOS Keychain entries):
 
 ```rust
 const LEGACY_SERVICES: &[(&str, &str)] = &[
@@ -191,9 +191,12 @@ const LEGACY_SERVICES: &[(&str, &str)] = &[
 ];
 ```
 
+No changes needed for Windows — the `keyring` crate in `keychain_windows.rs` uses the shared constants automatically.
+
 ## Step 6: Test
 
 1. Run `cargo check` in `src-tauri/` to verify Rust code compiles
 2. Run `npx tsc --noEmit` to verify TypeScript
 3. Run `cargo tauri dev` and add your provider in settings
 4. Verify streaming works, usage data is reported, and API keys are saved/loaded correctly
+5. CI will verify compilation on both macOS and Windows

@@ -30,7 +30,8 @@ Council of AI Agents (Synod) is a Tauri v2 desktop application with a Rust backe
 │  │  deepseek  │ mistral│ together│ cohere            │  │
 │  └───────────────────────────────────────────────────┘  │
 │  ┌───────────────────────────────────────────────────┐  │
-│  │       macOS Keychain (unified) │ File I/O         │  │
+│  │   Credential Store (platform) │ File I/O         │  │
+│  │   macOS: Keychain │ Windows: Credential Manager   │  │
 │  └───────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -89,9 +90,15 @@ IDLE ──► USER_INPUT ──► GENERATING_SYSTEM_PROMPTS ──► MODEL_TU
 
 ## Data Storage
 
-- **API Keys**: macOS Keychain — single unified JSON blob at `com.council-of-ai-agents.keys` with in-memory `ApiKeyCache`. Auto-migrates legacy per-provider keychain entries.
-- **Settings**: JSON file at `~/Library/Application Support/council-of-ai-agents/settings.json` (via `dirs::config_dir()`)
-- **Sessions**: JSON files at `~/Library/Application Support/council-of-ai-agents/sessions/` (via `dirs::data_dir()`, configurable via `sessionSavePath` setting)
+- **API Keys**: Platform credential store — single unified JSON blob at `com.council-of-ai-agents.keys` with in-memory `ApiKeyCache`. Uses conditional compilation (`#[cfg(target_os)]`) to select the backend:
+  - **macOS**: Keychain via `security-framework` (`keychain_macos.rs`). Auto-migrates legacy per-provider entries.
+  - **Windows**: Credential Manager via `keyring` crate (`keychain_windows.rs`)
+- **Settings**: JSON file via `dirs::config_dir()`:
+  - **macOS**: `~/Library/Application Support/council-of-ai-agents/settings.json`
+  - **Windows**: `%APPDATA%\council-of-ai-agents\settings.json`
+- **Sessions**: JSON files via `dirs::data_dir()` (configurable via `sessionSavePath` setting):
+  - **macOS**: `~/Library/Application Support/council-of-ai-agents/sessions/`
+  - **Windows**: `%APPDATA%\council-of-ai-agents\sessions\`
 
 ## Frontend Architecture
 

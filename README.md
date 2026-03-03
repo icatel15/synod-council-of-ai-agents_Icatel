@@ -13,12 +13,12 @@
   <img src="https://img.shields.io/badge/tauri-v2-24C8D8?logo=tauri&logoColor=white" alt="Tauri v2" />
   <img src="https://img.shields.io/badge/react-19-61DAFB?logo=react&logoColor=white" alt="React 19" />
   <img src="https://img.shields.io/badge/rust-stable-DEA584?logo=rust&logoColor=white" alt="Rust" />
-  <img src="https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white" alt="macOS" />
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-000000?logo=apple&logoColor=white" alt="macOS | Windows" />
 </p>
 
 ---
 
-Synod is a macOS desktop app that assembles a **council of AI models** to collaboratively tackle your questions. Multiple models from different providers discuss the topic sequentially — each building on what came before — then a **master model** synthesizes everything into a clear, actionable verdict.
+Synod is a desktop app for **macOS and Windows** that assembles a **council of AI models** to collaboratively tackle your questions. Multiple models from different providers discuss the topic sequentially — each building on what came before — then a **master model** synthesizes everything into a clear, actionable verdict.
 
 ## How It Works
 <img src="docs/images/pixel-art-flowchart.jpg" alt="Pixel art flowchart showing how Synod works: a user asks a question at the top, five AI council models discuss it sequentially in the middle, a crowned master model delivers the final verdict below, and a looping arrow with an @ symbol shows that users can follow up with any model afterward."/>
@@ -62,8 +62,8 @@ You ask a question, and your council of AI models responds one by one — each s
 - **Real-time streaming** with 4 animated cursor styles (ripple, breathing, orbit, multi-caret)
 - **Dark, light, and system themes** with smooth transitions
 - **Drag-and-drop** model reordering
-- **Secure API key storage** in macOS Keychain
-- Native macOS window with overlay title bar
+- **Secure API key storage** — macOS Keychain or Windows Credential Manager
+- Native window with overlay title bar
 
 ## Screenshots
 
@@ -75,7 +75,7 @@ You ask a question, and your council of AI models responds one by one — each s
 <p align="center">
   <img src="docs/images/screenshots/settings.png" alt="Synod settings panel showing model configuration" width="700" />
 </p>
-<p align="center"><em>Configure your council — choose from 8 providers, 30+ models, with API keys secured in macOS Keychain</em></p>
+<p align="center"><em>Configure your council — choose from 8 providers, 30+ models, with API keys secured in your OS credential store</em></p>
 
 <p align="center">
   <img src="docs/images/screenshots/advanced-settings.png" alt="Synod advanced settings showing prompt engineering modes" width="700" />
@@ -95,13 +95,13 @@ You ask a question, and your council of AI models responds one by one — each s
 | **Together AI** | Llama 4 Maverick, Llama 4 Scout |
 | **Cohere** | Command A, Command R+ |
 
-> Bring your own API keys. Each key is stored locally in the macOS Keychain — never sent anywhere except the provider's own API.
+> Bring your own API keys. Each key is stored locally in the OS credential store (macOS Keychain or Windows Credential Manager) — never sent anywhere except the provider's own API.
 
 ## Quick Start
 
 ### Prerequisites
 
-- **macOS** 10.15 (Catalina) or later
+- **macOS** 10.15+ or **Windows** 10+
 - **Rust** 1.77+ &mdash; [install via rustup](https://rustup.rs/)
 - **Node.js** 18+ &mdash; [download](https://nodejs.org/)
 - **Tauri CLI** v2 &mdash; `cargo install tauri-cli --version "^2"`
@@ -120,13 +120,14 @@ A setup wizard will guide you through configuring your council models and API ke
 ## Building
 
 ```bash
-# Production build — creates a .app bundle
 cargo tauri build
-
-# Output: src-tauri/target/release/bundle/macos/Synod.app
 ```
 
-An Xcode project (`CouncilOfAIAgents.xcodeproj`) is also included with dev and build schemes.
+**macOS** — produces `src-tauri/target/release/bundle/macos/Synod.app` and `.dmg`
+
+**Windows** — produces `src-tauri/target/release/bundle/nsis/Synod_x.x.x_x64-setup.exe` and `.msi`
+
+An Xcode project (`CouncilOfAIAgents.xcodeproj`) is also included with dev and build schemes for macOS.
 
 ## Architecture
 
@@ -159,7 +160,7 @@ src-tauri/                    Rust backend
 | Animations | Framer Motion |
 | Drag-and-drop | dnd-kit |
 | Markdown | react-markdown + react-syntax-highlighter |
-| API key storage | macOS Keychain (security-framework) |
+| API key storage | macOS Keychain / Windows Credential Manager |
 | HTTP streaming | reqwest + tokio-stream with SSE line buffering |
 
 ## Documentation

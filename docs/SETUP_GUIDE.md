@@ -30,11 +30,16 @@ cargo install tauri-cli --version "^2"
 
 Verify: `cargo tauri --version`
 
-### 4. Install Xcode Command Line Tools
+### 4. Platform-Specific Requirements
 
+**macOS:**
 ```bash
 xcode-select --install
 ```
+
+**Windows:**
+- [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++" workload
+- [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) runtime (pre-installed on Windows 11)
 
 ## Running the App
 
@@ -48,7 +53,7 @@ cargo tauri dev
 
 This starts the Vite dev server and the Tauri app with hot-reload.
 
-### From Xcode
+### From Xcode (macOS only)
 
 1. Open `CouncilOfAIAgents.xcodeproj`
 2. Select the **Dev** scheme
@@ -60,7 +65,7 @@ On first launch, the app presents a setup wizard that walks you through:
 
 1. **Welcome** — Overview of the app
 2. **Model Selection** — Choose which AI models to include in your council
-3. **API Keys** — Enter API keys for each selected provider (stored in macOS Keychain)
+3. **API Keys** — Enter API keys for each selected provider (stored securely in your OS credential store)
 4. **Master Model** — Select which model delivers the final verdict
 5. **Complete** — Ready to start your first council discussion
 
@@ -132,4 +137,6 @@ You need at least one API key to use the app. The more providers you configure, 
 cargo tauri build
 ```
 
-The `.app` bundle will be at `src-tauri/target/release/bundle/macos/`.
+**macOS** — The `.app` bundle will be at `src-tauri/target/release/bundle/macos/`
+
+**Windows** — The `.exe` installer will be at `src-tauri/target/release/bundle/nsis/` and `.msi` at `src-tauri/target/release/bundle/msi/`
