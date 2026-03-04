@@ -5,8 +5,10 @@ import type {
   DiscussionEntry,
   DiscussionDepth,
   ModelConfig,
+  MasterModelConfig,
   ChatMessage,
   ClarifyingExchange,
+  Provider,
   UsageData,
 } from '../types';
 import * as tauri from '../lib/tauri';
@@ -26,7 +28,7 @@ interface CouncilStoreState {
   startDiscussion: (
     userQuestion: string,
     models: ModelConfig[],
-    masterModel: { provider: string; model: string },
+    masterModel: MasterModelConfig,
     systemPromptMode: 'upfront' | 'dynamic',
     discussionDepth: DiscussionDepth,
     getApiKey: (service: string) => Promise<string | null>,
@@ -132,7 +134,7 @@ ${JSON.stringify(
         set({ currentStreamId: streamId, currentStreamContent: '' });
 
         const result = await tauri.streamChat(
-          masterModel.provider as any,
+          masterModel.provider,
           masterModel.model,
           promptGenMessages,
           'You are an AI orchestrator. Generate system prompts for council models. Return valid JSON only.',
@@ -210,7 +212,7 @@ ${JSON.stringify(
                 () => {},
               );
               const dynamicResult = await tauri.streamChat(
-                masterModel.provider as any,
+                masterModel.provider,
                 masterModel.model,
                 [
                   {
@@ -406,7 +408,7 @@ ${JSON.stringify(
         : `You are the master AI judge in a council of AI models. You have reviewed all council members' opinions on the user's question. Your job is to synthesize the best advice, resolve any disagreements, and deliver a clear, actionable final verdict. Be thorough but concise. Structure your response with clear sections.`;
 
       const verdictResult = await tauri.streamChat(
-        masterModel.provider as any,
+        masterModel.provider,
         masterModel.model,
         verdictMessages,
         masterSystemPrompt,
@@ -490,7 +492,7 @@ ${JSON.stringify(
       });
 
       const result = await tauri.streamChat(
-        targetProvider as any,
+        targetProvider as Provider,
         targetModel,
         messages,
         systemPrompt,

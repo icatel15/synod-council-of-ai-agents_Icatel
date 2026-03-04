@@ -13,17 +13,20 @@ export default function ApiKeyManager() {
   const [openInfo, setOpenInfo] = useState<string | null>(null);
 
   useEffect(() => {
-    loadKeyStates();
-  }, []);
-
-  const loadKeyStates = async () => {
-    const states: typeof keyStates = {};
-    for (const provider of PROVIDERS) {
-      const has = await tauri.hasApiKey(provider.keychainService);
-      states[provider.id] = { hasKey: has, visible: false, value: '', editing: false };
+    let cancelled = false;
+    async function loadKeyStates() {
+      const states: Record<string, { hasKey: boolean; visible: boolean; value: string; editing: boolean }> = {};
+      for (const provider of PROVIDERS) {
+        const has = await tauri.hasApiKey(provider.keychainService);
+        states[provider.id] = { hasKey: has, visible: false, value: '', editing: false };
+      }
+      if (!cancelled) {
+        setKeyStates(states);
+      }
     }
-    setKeyStates(states);
-  };
+    loadKeyStates();
+    return () => { cancelled = true; };
+  }, []);
 
   const handleSaveKey = async (provider: ProviderInfo) => {
     const state = keyStates[provider.id];

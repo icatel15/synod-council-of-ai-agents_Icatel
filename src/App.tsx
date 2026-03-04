@@ -1,22 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import MainLayout from './components/layout/MainLayout';
 import SetupWizard from './components/setup/SetupWizard';
 import { useSettingsStore } from './stores/settingsStore';
 
 export default function App() {
   const { settings, loaded, loadSettings } = useSettingsStore();
-  const [showApp, setShowApp] = useState(false);
 
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
 
-  // Watch for setup completion
-  useEffect(() => {
-    if (loaded && settings.setupCompleted) {
-      setShowApp(true);
-    }
-  }, [loaded, settings.setupCompleted]);
+  const showApp = loaded && settings.setupCompleted;
 
   if (!loaded) {
     return (

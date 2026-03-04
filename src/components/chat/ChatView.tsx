@@ -15,7 +15,7 @@ import { useCouncilStore } from '../../stores/councilStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { getApiKey, streamChat, onStreamToken } from '../../lib/tauri';
-import type { DiscussionEntry, Session } from '../../types';
+import type { DiscussionEntry, Provider, Session } from '../../types';
 
 export default function ChatView() {
   const [input, setInput] = useState('');
@@ -47,16 +47,18 @@ export default function ChatView() {
     settingsRef.current = settings;
   }, [saveCurrentSession, updateActiveSession, settings]);
 
-  // Load entries from active session
+  // Sync entries from active session (setState during render pattern)
+  const activeSessionId = activeSession?.id;
+  const [prevSessionId, setPrevSessionId] = useState<string | undefined>(undefined);
+  if (prevSessionId !== activeSessionId) {
+    setPrevSessionId(activeSessionId);
+    setEntries(activeSession?.discussion ?? []);
+  }
+
+  // Keep entriesRef in sync with entries state
   useEffect(() => {
-    if (activeSession) {
-      setEntries(activeSession.discussion);
-      entriesRef.current = activeSession.discussion;
-    } else {
-      setEntries([]);
-      entriesRef.current = [];
-    }
-  }, [activeSession?.id]);
+    entriesRef.current = entries;
+  }, [entries]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -91,7 +93,7 @@ export default function ChatView() {
       const streamId = uuidv4();
       const unlisten = await onStreamToken(streamId, () => {});
       const result = await streamChat(
-        currentSettings.masterModel.provider as any,
+        currentSettings.masterModel.provider as Provider,
         currentSettings.masterModel.model,
         [
           {
@@ -435,7 +437,7 @@ export default function ChatView() {
 
             {council.state === 'follow_up' && council.followUpInProgress && (() => {
               // Find the last follow-up question entry to get the target model info
-              const lastFQ = [...entriesRef.current].reverse().find(e => e.role === 'follow_up_question');
+              const lastFQ = [...entries].reverse().find(e => e.role === 'follow_up_question');
               if (!lastFQ || lastFQ.role !== 'follow_up_question') return null;
               return (
                 <ModelResponse

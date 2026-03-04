@@ -50,10 +50,12 @@ export default function MentionDropdown({
       )
     : allModels;
 
-  // Reset selection when filter changes
-  useEffect(() => {
+  // Reset selection when filter changes (setState during render pattern)
+  const [prevQuery, setPrevQuery] = useState(query);
+  if (prevQuery !== query) {
+    setPrevQuery(query);
     setSelectedIndex(0);
-  }, [query]);
+  }
 
   // Keyboard navigation
   useEffect(() => {

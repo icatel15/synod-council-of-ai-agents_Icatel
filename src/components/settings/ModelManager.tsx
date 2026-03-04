@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { GripVertical, Plus, Trash2, Crown, BarChart3, RefreshCw, Loader2 } from 'lucide-react';
 import {
   DndContext,
@@ -21,7 +21,7 @@ import Button from '../common/Button';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { PROVIDERS, getProviderColor } from '../../types';
-import type { ModelConfig, Provider, MasterModelConfig, Session, UsageData } from '../../types';
+import type { ModelConfig, Provider, MasterModelConfig, Session } from '../../types';
 import * as tauri from '../../lib/tauri';
 
 interface SortableModelProps {
@@ -135,7 +135,7 @@ function TokenUsageSection() {
   const [usageStats, setUsageStats] = useState<ModelUsageStats[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const loadUsageStats = async () => {
+  const loadUsageStats = useCallback(async () => {
     setLoading(true);
     try {
       const { start } = getMonthBounds();
@@ -225,7 +225,7 @@ function TokenUsageSection() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [sessions, settings.sessionSavePath]);
 
   // Load on mount and when sessions change
   useEffect(() => {
@@ -234,7 +234,7 @@ function TokenUsageSection() {
     } else {
       setUsageStats([]);
     }
-  }, [sessions.length]);
+  }, [sessions.length, loadUsageStats]);
 
   const daysUntilReset = getDaysUntilReset();
   const totalInput = usageStats.reduce((sum, s) => sum + s.inputTokens, 0);
