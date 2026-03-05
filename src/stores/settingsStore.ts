@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { AppSettings, ThemeMode } from '../types';
+import { DEFAULT_SUMMARIZER_SYSTEM_PROMPT } from '../types';
 import * as tauri from '../lib/tauri';
 import { applyTheme, watchSystemTheme } from '../lib/theme';
 
@@ -16,13 +17,19 @@ interface SettingsState {
 const defaultSettings: AppSettings = {
   councilModels: [],
   masterModel: { provider: 'anthropic', model: 'claude-opus-4-6' },
-  systemPromptMode: 'upfront',
+  summarizerModel: {
+    provider: 'anthropic',
+    model: 'claude-opus-4-6',
+    systemPrompt: DEFAULT_SUMMARIZER_SYSTEM_PROMPT,
+  },
   discussionDepth: 'thorough',
   discussionMode: 'sequential',
   theme: 'system',
   cursorStyle: 'orbit',
   sessionSavePath: null,
   setupCompleted: false,
+  councilPresets: [],
+  activePresetId: null,
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

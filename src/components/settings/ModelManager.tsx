@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { GripVertical, Plus, Trash2, Crown, BarChart3, RefreshCw, Loader2 } from 'lucide-react';
+import { GripVertical, Plus, Trash2, Crown, Sparkles, BarChart3, RefreshCw, Loader2 } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -22,7 +22,8 @@ import OpenRouterModelSearch from '../common/OpenRouterModelSearch';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { PROVIDERS, getProviderColor } from '../../types';
-import type { ModelConfig, Provider, MasterModelConfig, Session } from '../../types';
+import type { ModelConfig, Provider, MasterModelConfig, SummarizerModelConfig, Session } from '../../types';
+import { DEFAULT_SUMMARIZER_SYSTEM_PROMPT } from '../../types';
 import * as tauri from '../../lib/tauri';
 
 interface SortableModelProps {
@@ -429,6 +430,18 @@ export default function ModelManager() {
     updateSettings({ masterModel });
   };
 
+  const handleSummarizerModelChange = (provider: Provider, model: string) => {
+    updateSettings({
+      summarizerModel: { ...settings.summarizerModel, provider, model },
+    });
+  };
+
+  const handleSummarizerPromptChange = (systemPrompt: string) => {
+    updateSettings({
+      summarizerModel: { ...settings.summarizerModel, systemPrompt },
+    });
+  };
+
   return (
     <div className="space-y-6">
       {/* Council Models */}
@@ -639,6 +652,92 @@ export default function ModelManager() {
               )}
             </select>
           )}
+        </div>
+      </div>
+
+      {/* Summarizer Model (parallel mode only) */}
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <Sparkles size={14} className="text-[var(--color-accent)]" />
+          <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+            Summarizer Model
+          </h3>
+        </div>
+        <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
+          Synthesizes all council responses into a comprehensive final output (parallel mode)
+        </p>
+
+        <div className="space-y-2">
+          <select
+            value={settings.summarizerModel.provider}
+            onChange={(e) => {
+              const provider = e.target.value as Provider;
+              const firstModel = PROVIDERS.find((p) => p.id === provider)?.models[0];
+              if (firstModel) {
+                handleSummarizerModelChange(provider, firstModel.id);
+              } else if (provider === 'openrouter') {
+                updateSettings({
+                  summarizerModel: { ...settings.summarizerModel, provider, model: '' },
+                });
+              }
+            }}
+            className="w-full px-3 py-1.5 text-sm bg-[var(--color-bg-input)] border border-[var(--color-border-primary)] rounded-[var(--radius-sm)] text-[var(--color-text-primary)]"
+          >
+            {PROVIDERS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          {settings.summarizerModel.provider === 'openrouter' ? (
+            <div>
+              {settings.summarizerModel.model && (
+                <p className="text-xs text-[var(--color-text-secondary)] mb-1">
+                  Selected: <span className="font-medium">{settings.summarizerModel.model}</span>
+                </p>
+              )}
+              <OpenRouterModelSearch
+                onSelect={(model) => handleSummarizerModelChange('openrouter', model.id)}
+              />
+            </div>
+          ) : (
+            <select
+              value={settings.summarizerModel.model}
+              onChange={(e) =>
+                handleSummarizerModelChange(settings.summarizerModel.provider, e.target.value)
+              }
+              className="w-full px-3 py-1.5 text-sm bg-[var(--color-bg-input)] border border-[var(--color-border-primary)] rounded-[var(--radius-sm)] text-[var(--color-text-primary)]"
+            >
+              {PROVIDERS.find((p) => p.id === settings.summarizerModel.provider)?.models.map(
+                (m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ),
+              )}
+            </select>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
+              System Prompt
+            </label>
+            <textarea
+              value={settings.summarizerModel.systemPrompt}
+              onChange={(e) => handleSummarizerPromptChange(e.target.value)}
+              rows={6}
+              className="w-full px-3 py-2 text-sm bg-[var(--color-bg-input)] border border-[var(--color-border-primary)] rounded-[var(--radius-sm)] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] resize-y"
+              placeholder="Enter a custom system prompt for the summarizer..."
+            />
+            {settings.summarizerModel.systemPrompt !== DEFAULT_SUMMARIZER_SYSTEM_PROMPT && (
+              <button
+                onClick={() => handleSummarizerPromptChange(DEFAULT_SUMMARIZER_SYSTEM_PROMPT)}
+                className="mt-1 text-xs text-[var(--color-accent)] hover:underline"
+              >
+                Reset to default
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

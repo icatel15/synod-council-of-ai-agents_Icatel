@@ -46,6 +46,10 @@ export async function streamChat(
   });
 }
 
+export async function abortStream(streamId: string): Promise<void> {
+  return invoke('abort_stream', { streamId });
+}
+
 export function onStreamToken(
   streamId: string,
   callback: (token: StreamToken) => void,

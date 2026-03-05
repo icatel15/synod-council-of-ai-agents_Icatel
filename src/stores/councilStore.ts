@@ -7,6 +7,7 @@ import type {
   DiscussionMode,
   ModelConfig,
   MasterModelConfig,
+  SummarizerModelConfig,
   ChatMessage,
   ClarifyingExchange,
   Provider,
@@ -23,6 +24,7 @@ interface CouncilStoreState {
   clarifyingExchanges: ClarifyingExchange[];
   waitingForClarification: boolean;
   followUpInProgress: boolean;
+  isStopping: boolean;
   error: string | null;
 
   // Parallel mode state
@@ -32,15 +34,17 @@ interface CouncilStoreState {
   parallelTotalCount: number;
 
   // Actions
+  stopDiscussion: () => Promise<void>;
   startDiscussion: (
     userQuestion: string,
     models: ModelConfig[],
     masterModel: MasterModelConfig,
-    systemPromptMode: 'upfront' | 'dynamic',
     discussionDepth: DiscussionDepth,
     discussionMode: DiscussionMode,
     getApiKey: (service: string) => Promise<string | null>,
     onEntryComplete: (entry: DiscussionEntry) => void,
+    customSystemPrompts?: Record<string, string>,
+    summarizerModel?: SummarizerModelConfig,
   ) => Promise<void>;
 
   sendFollowUp: (
@@ -49,6 +53,14 @@ interface CouncilStoreState {
     targetDisplayName: string,
     followUpQuestion: string,
     discussionEntries: DiscussionEntry[],
+    getApiKey: (service: string) => Promise<string | null>,
+    onEntryComplete: (entry: DiscussionEntry) => void,
+  ) => Promise<void>;
+
+  sendOrchestratorFollowUp: (
+    followUpQuestion: string,
+    discussionEntries: DiscussionEntry[],
+    masterModel: MasterModelConfig,
     getApiKey: (service: string) => Promise<string | null>,
     onEntryComplete: (entry: DiscussionEntry) => void,
   ) => Promise<void>;
@@ -66,31 +78,69 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
   clarifyingExchanges: [],
   waitingForClarification: false,
   followUpInProgress: false,
+  isStopping: false,
   error: null,
   parallelStreams: {},
   parallelStreamIds: {},
   parallelCompletedCount: 0,
   parallelTotalCount: 0,
 
+  stopDiscussion: async () => {
+    const s = get();
+    if (s.isStopping) return;
+    set({ isStopping: true });
+
+    // Collect all active stream IDs to abort
+    const idsToAbort: string[] = [];
+    if (s.currentStreamId) idsToAbort.push(s.currentStreamId);
+    for (const id of Object.values(s.parallelStreamIds)) {
+      if (id) idsToAbort.push(id);
+    }
+
+    // Fire all abort calls concurrently
+    await Promise.allSettled(idsToAbort.map((id) => tauri.abortStream(id)));
+
+    set({
+      state: 'complete',
+      isStopping: false,
+      currentStreamId: null,
+      currentStreamContent: '',
+      waitingForClarification: false,
+      followUpInProgress: false,
+      parallelStreams: {},
+      parallelStreamIds: {},
+    });
+  },
+
   startDiscussion: async (
     userQuestion,
     models,
     masterModel,
-    systemPromptMode,
     discussionDepth,
     discussionMode,
     getApiKey,
     onEntryComplete,
+    customSystemPrompts,
+    summarizerModel,
   ) => {
     set({ state: 'user_input', error: null });
 
     // Add user entry
     onEntryComplete({ role: 'user', content: userQuestion });
 
+    // Branch: orchestrator mode — direct chat with master model
+    if (discussionMode === 'orchestrator') {
+      await runOrchestratorChat(
+        userQuestion, masterModel, getApiKey, onEntryComplete, set,
+      );
+      return;
+    }
+
     // Branch: parallel mode uses a completely different flow
     if (discussionMode === 'parallel') {
       await runParallelDiscussion(
         userQuestion, models, masterModel, discussionDepth, getApiKey, onEntryComplete, set, get,
+        customSystemPrompts, summarizerModel,
       );
       return;
     }
@@ -102,97 +152,20 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
     // Track master model usage across prompt generation + verdict
     let masterPromptGenUsage: UsageData | undefined;
 
-    // Generate system prompts if upfront mode
-    if (systemPromptMode === 'upfront') {
-      set({ state: 'generating_system_prompts' });
-      try {
-        const masterApiKey = await getApiKey(
-          `com.council-of-ai-agents.${masterModel.provider}`,
-        );
-        if (!masterApiKey) {
-          set({ state: 'error', error: `No API key found for master model provider (${masterModel.provider})` });
-          return;
-        }
-
-        const promptGenMessages: ChatMessage[] = [
-          {
-            role: 'user',
-            content: `You are the orchestrator of a council of AI models helping a user make an informed decision. The user's question is:
-
-"${userQuestion}"
-
-The following AI models will discuss this question in order:
-${models.map((m, i) => `${i + 1}. ${m.displayName} (${m.provider})`).join('\n')}
-
-Generate a specific, tailored system prompt for EACH council model that helps them provide their best analysis. The first model (${models[0]?.displayName}) should be instructed that it MAY ask up to 2 clarifying questions if needed. All other models should be told they CANNOT ask questions.
-
-Each model should be encouraged to provide unique perspectives and not just repeat previous opinions.
-${discussionDepth === 'concise' ? '\nIMPORTANT: Instruct each model to keep responses brief and focused — 2-3 key points maximum. No lengthy explanations.\n' : ''}
-Return your response in this exact JSON format:
-${JSON.stringify(
-  models.reduce(
-    (acc, m) => ({
-      ...acc,
-      [`${m.provider}:${m.model}`]: 'system prompt here',
-    }),
-    {},
-  ),
-  null,
-  2,
-)}`,
-          },
-        ];
-
-        const streamId = uuidv4();
-        const unlisten = await tauri.onStreamToken(streamId, (token) => {
-          if (!token.done) {
-            set((s) => ({
-              currentStreamContent: s.currentStreamContent + token.token,
-            }));
-          }
-        });
-
-        set({ currentStreamId: streamId, currentStreamContent: '' });
-
-        const result = await tauri.streamChat(
-          masterModel.provider,
-          masterModel.model,
-          promptGenMessages,
-          'You are an AI orchestrator. Generate system prompts for council models. Return valid JSON only.',
-          masterApiKey,
-          streamId,
-        );
-
-        unlisten();
-        set({ currentStreamId: null, currentStreamContent: '' });
-        masterPromptGenUsage = result.usage;
-
-        // Parse the JSON response
-        try {
-          const jsonMatch = result.content.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            const prompts = JSON.parse(jsonMatch[0]);
-            const promptMap = new Map<string, string>();
-            for (const [key, value] of Object.entries(prompts)) {
-              promptMap.set(key, value as string);
-            }
-            set({ systemPrompts: promptMap });
-          }
-        } catch {
-          // If JSON parsing fails, continue without custom prompts
-          console.warn('Failed to parse system prompts, using defaults');
-        }
-      } catch (err) {
-        set({
-          state: 'error',
-          error: `Failed to generate system prompts: ${err}`,
-        });
-        return;
+    // If custom system prompts provided (from preset), pre-populate and skip generation
+    if (customSystemPrompts && Object.keys(customSystemPrompts).length > 0) {
+      const promptMap = new Map<string, string>();
+      for (const [key, value] of Object.entries(customSystemPrompts)) {
+        if (value.trim()) promptMap.set(key, value);
       }
+      set({ systemPrompts: promptMap });
     }
 
     // Process each model sequentially
     for (let i = 0; i < models.length; i++) {
+      // Early exit if stop was requested
+      if (get().isStopping || get().state === 'complete') return;
+
       const model = models[i];
       set({ state: 'model_turn', currentModelIndex: i });
 
@@ -220,8 +193,8 @@ ${JSON.stringify(
         let systemPrompt =
           get().systemPrompts.get(systemPromptKey) || getDefaultSystemPrompt(model, i === 0, discussionDepth);
 
-        // Dynamic mode: generate prompt for this model
-        if (systemPromptMode === 'dynamic' && i > 0) {
+        // Dynamic prompt generation: master generates context-aware prompts per turn
+        if (i > 0) {
           try {
             const masterApiKey = await getApiKey(
               `com.council-of-ai-agents.${masterModel.provider}`,
@@ -304,6 +277,9 @@ ${JSON.stringify(
             }, 200);
           });
 
+          // Check if stopped while waiting for clarification
+          if (get().isStopping || get().state === 'complete') return;
+
           const exchanges = get().clarifyingExchanges;
           const clarifyAnswer = exchanges[exchanges.length - 1]?.answer;
 
@@ -378,6 +354,9 @@ ${JSON.stringify(
           onEntryComplete(entry);
         }
       } catch (err) {
+        // If aborted, break silently — partial results are preserved
+        if (String(err).includes('aborted')) break;
+
         // Add error entry and continue to next model
         const entry: DiscussionEntry = {
           role: 'model',
@@ -390,6 +369,9 @@ ${JSON.stringify(
         onEntryComplete(entry);
       }
     }
+
+    // Check if stopped before proceeding to verdict
+    if (get().isStopping || get().state === 'complete') return;
 
     // Master verdict
     set({ state: 'master_verdict', currentModelIndex: -1 });
@@ -454,6 +436,7 @@ ${JSON.stringify(
 
       set({ state: 'complete' });
     } catch (err) {
+      if (String(err).includes('aborted')) return;
       set({ state: 'error', error: `Master verdict failed: ${err}` });
     }
   },
@@ -536,6 +519,7 @@ ${JSON.stringify(
 
       set({ state: 'complete', followUpInProgress: false });
     } catch (err) {
+      if (String(err).includes('aborted')) return;
       // Emit error entry and recover to complete state
       onEntryComplete({
         role: 'follow_up_answer',
@@ -545,6 +529,89 @@ ${JSON.stringify(
         content: `[Error: Failed to get follow-up response - ${err}]`,
       });
       set({ state: 'complete', followUpInProgress: false, currentStreamId: null, currentStreamContent: '' });
+    }
+  },
+
+  sendOrchestratorFollowUp: async (
+    followUpQuestion,
+    discussionEntries,
+    masterModel,
+    getApiKey,
+    onEntryComplete,
+  ) => {
+    set({
+      state: 'orchestrator_turn',
+      error: null,
+    });
+
+    // Emit user entry
+    onEntryComplete({ role: 'user', content: followUpQuestion });
+
+    try {
+      const masterApiKey = await getApiKey(
+        `com.council-of-ai-agents.${masterModel.provider}`,
+      );
+      if (!masterApiKey) {
+        set({
+          state: 'error',
+          error: `No API key found for master model (${masterModel.provider})`,
+        });
+        return;
+      }
+
+      // Build conversation history from user + orchestrator_message entries
+      const messages: ChatMessage[] = [];
+      for (const entry of discussionEntries) {
+        if (entry.role === 'user') {
+          messages.push({ role: 'user', content: entry.content });
+        } else if (entry.role === 'orchestrator_message') {
+          messages.push({ role: 'assistant', content: entry.content });
+        }
+      }
+      // Add the new follow-up question
+      messages.push({ role: 'user', content: followUpQuestion });
+
+      const streamId = uuidv4();
+      set({ currentStreamId: streamId, currentStreamContent: '' });
+
+      const unlisten = await tauri.onStreamToken(streamId, (token) => {
+        if (!token.done && !token.error) {
+          set((s) => ({
+            currentStreamContent: s.currentStreamContent + token.token,
+          }));
+        }
+      });
+
+      const result = await tauri.streamChat(
+        masterModel.provider,
+        masterModel.model,
+        messages,
+        'You are an AI orchestrator. The user is speaking to you directly. Continue the conversation naturally, providing helpful and thoughtful responses.',
+        masterApiKey,
+        streamId,
+      );
+
+      unlisten();
+      set({ currentStreamId: null, currentStreamContent: '' });
+
+      onEntryComplete({
+        role: 'orchestrator_message',
+        provider: masterModel.provider,
+        model: masterModel.model,
+        content: result.content,
+        usage: result.usage,
+      });
+
+      set({ state: 'complete' });
+    } catch (err) {
+      if (String(err).includes('aborted')) return;
+      onEntryComplete({
+        role: 'orchestrator_message',
+        provider: masterModel.provider,
+        model: masterModel.model,
+        content: `[Error: Failed to get orchestrator response - ${err}]`,
+      });
+      set({ state: 'complete', currentStreamId: null, currentStreamContent: '' });
     }
   },
 
@@ -571,6 +638,7 @@ ${JSON.stringify(
       clarifyingExchanges: [],
       waitingForClarification: false,
       followUpInProgress: false,
+      isStopping: false,
       error: null,
       parallelStreams: {},
       parallelStreamIds: {},
@@ -621,20 +689,69 @@ function getDefaultSystemPrompt(model: ModelConfig, isFirst: boolean, depth: Dis
 }
 
 function looksLikeClarifyingQuestion(response: string): boolean {
-  const questionIndicators = [
-    'before I provide my recommendation',
-    'could you clarify',
-    'I have a few questions',
-    'let me ask',
-    'to help narrow down',
-    'could you tell me',
-    'what is your preference',
-    'do you have a preference',
-  ];
   const lowerResponse = response.toLowerCase();
-  return questionIndicators.some((indicator) =>
-    lowerResponse.includes(indicator),
-  ) && response.includes('?');
+
+  // Must contain at least one question mark
+  if (!response.includes('?')) return false;
+
+  // Phrase-based indicators — model is explicitly asking the user something
+  const phraseIndicators = [
+    'before i provide',
+    'before i run',
+    'before i begin',
+    'before i start',
+    'before i proceed',
+    'before i dive',
+    'before i generate',
+    'before i create',
+    'could you clarify',
+    'can you clarify',
+    'could you specify',
+    'can you specify',
+    'could you tell me',
+    'can you tell me',
+    'could you confirm',
+    'can you confirm',
+    'please confirm',
+    'please clarify',
+    'please let me know',
+    'please specify',
+    'i have a few questions',
+    'i have some questions',
+    'let me ask',
+    'i\'d like to ask',
+    'i need to ask',
+    'to help narrow down',
+    'to better assist',
+    'to give you the best',
+    'what is your preference',
+    'what are your preferences',
+    'do you have a preference',
+    'would you like me to',
+    'would you prefer',
+    'should i include',
+    'should i focus',
+    'how many',
+    'how much',
+    'which option',
+    'which approach',
+    'which would you',
+    'once you confirm',
+    'once you let me know',
+    'what specifically',
+    'what exactly',
+    'do you want me to',
+  ];
+
+  if (phraseIndicators.some((p) => lowerResponse.includes(p))) return true;
+
+  // Structural heuristic: response ends with a direct question (last 200 chars contain '?')
+  // AND contains fewer than 3 paragraphs — likely asking rather than analyzing
+  const paragraphs = response.trim().split(/\n\s*\n/).length;
+  const lastChunk = lowerResponse.slice(-200);
+  if (paragraphs <= 3 && lastChunk.includes('?')) return true;
+
+  return false;
 }
 
 function combineUsage(a?: UsageData, b?: UsageData): UsageData | undefined {
@@ -729,6 +846,8 @@ async function runParallelDiscussion(
   onEntryComplete: (entry: DiscussionEntry) => void,
   set: SetState,
   get: GetState,
+  customSystemPrompts?: Record<string, string>,
+  summarizerModel?: SummarizerModelConfig,
 ): Promise<void> {
   const discussionSoFar: DiscussionEntry[] = [
     { role: 'user', content: userQuestion },
@@ -736,10 +855,21 @@ async function runParallelDiscussion(
 
   let masterPromptGenUsage: UsageData | undefined;
 
-  // ── Step 1: Generate system prompts + optional clarifying questions ──
-  set({ state: 'generating_system_prompts' });
+  // If custom system prompts provided (from preset), pre-populate and skip generation
+  const hasCustomPrompts = customSystemPrompts && Object.keys(customSystemPrompts).length > 0;
+  if (hasCustomPrompts) {
+    const promptMap = new Map<string, string>();
+    for (const [key, value] of Object.entries(customSystemPrompts)) {
+      if (value.trim()) promptMap.set(key, value);
+    }
+    set({ systemPrompts: promptMap });
+  }
 
+  // ── Step 1: Generate system prompts + optional clarifying questions ──
   try {
+    if (!hasCustomPrompts) {
+    set({ state: 'generating_system_prompts' });
+
     const masterApiKey = await getApiKey(
       `com.council-of-ai-agents.${masterModel.provider}`,
     );
@@ -852,7 +982,12 @@ Return your response in this exact JSON format:
           }
         }, 200);
       });
+
+      // Check if stopped while waiting for clarification
+      if (get().isStopping || get().state === 'complete') return;
     }
+
+    } // end if (!hasCustomPrompts)
 
     // ── Step 3: Pre-resolve all API keys (fail fast) ──
     const uniqueProviders = [...new Set(models.map((m) => m.provider))];
@@ -955,6 +1090,9 @@ Return your response in this exact JSON format:
       } catch (err) {
         modelUnlisten();
 
+        // If aborted, just return silently — partial results preserved
+        if (String(err).includes('aborted')) return;
+
         // Error entry — doesn't abort other models
         const entry: DiscussionEntry = {
           role: 'model',
@@ -983,14 +1121,30 @@ Return your response in this exact JSON format:
     // Wait for ALL models to complete (regardless of individual failures)
     await Promise.allSettled(modelPromises);
 
+    // Check if stopped before proceeding to verdict
+    if (get().isStopping || get().state === 'complete') return;
+
     // Clear parallel state
     set({
       parallelStreams: {},
       parallelStreamIds: {},
     });
 
-    // ── Step 5: Master verdict (reuses existing logic) ──
+    // ── Step 5: Verdict (uses dedicated summarizer model if available) ──
+    // In parallel mode, a separate summarizer model synthesizes all responses.
+    // This decouples the verdict quality from the master model used for prompt generation.
+    const verdictProvider = summarizerModel?.provider ?? masterModel.provider;
+    const verdictModel = summarizerModel?.model ?? masterModel.model;
+
     set({ state: 'master_verdict', currentModelIndex: -1 });
+
+    const verdictApiKey = await getApiKey(
+      `com.council-of-ai-agents.${verdictProvider}`,
+    );
+    if (!verdictApiKey) {
+      set({ state: 'error', error: `No API key found for summarizer model (${verdictProvider})` });
+      return;
+    }
 
     const verdictMessages: ChatMessage[] = [
       {
@@ -1010,35 +1164,108 @@ Return your response in this exact JSON format:
       }
     });
 
-    const masterSystemPrompt = discussionDepth === 'concise'
-      ? `You are the master AI judge in a council of AI models. Each model responded INDEPENDENTLY to the user's question without seeing each other's responses. Deliver a brief, focused verdict in 3-5 sentences. Highlight key agreements, disagreements, and your recommended action.`
-      : `You are the master AI judge in a council of AI models. Each model responded INDEPENDENTLY to the user's question without seeing each other's responses. Your job is to synthesize all independent perspectives, identify genuine consensus vs. coincidental agreement, resolve disagreements, and deliver a clear, actionable final verdict. Structure your response with clear sections.`;
+    // Use summarizer's custom system prompt, or fall back to depth-based defaults
+    const verdictSystemPrompt = summarizerModel?.systemPrompt
+      ?? (discussionDepth === 'concise'
+        ? `You are the master AI judge in a council of AI models. Each model responded INDEPENDENTLY to the user's question without seeing each other's responses. Deliver a brief, focused verdict in 3-5 sentences. Highlight key agreements, disagreements, and your recommended action.`
+        : `You are the master AI judge in a council of AI models. Each model responded INDEPENDENTLY to the user's question without seeing each other's responses. Your job is to synthesize all independent perspectives, identify genuine consensus vs. coincidental agreement, resolve disagreements, and deliver a clear, actionable final verdict. Structure your response with clear sections.`);
 
     const verdictResult = await tauri.streamChat(
-      masterModel.provider,
-      masterModel.model,
+      verdictProvider as Provider,
+      verdictModel,
       verdictMessages,
-      masterSystemPrompt,
-      masterApiKey,
+      verdictSystemPrompt,
+      verdictApiKey,
       verdictStreamId,
     );
 
     verdictUnlisten();
     set({ currentStreamId: null, currentStreamContent: '' });
 
-    const masterTotalUsage = combineUsage(masterPromptGenUsage, verdictResult.usage);
+    // When using a dedicated summarizer, track its usage separately from master prompt-gen
+    const verdictUsage = summarizerModel
+      ? verdictResult.usage
+      : combineUsage(masterPromptGenUsage, verdictResult.usage);
 
     const verdictEntry: DiscussionEntry = {
       role: 'master_verdict',
-      provider: masterModel.provider,
-      model: masterModel.model,
+      provider: verdictProvider,
+      model: verdictModel,
       content: verdictResult.content,
-      usage: masterTotalUsage,
+      usage: verdictUsage,
     };
     onEntryComplete(verdictEntry);
 
     set({ state: 'complete' });
   } catch (err) {
+    if (String(err).includes('aborted')) return;
     set({ state: 'error', error: `Parallel discussion failed: ${err}` });
+  }
+}
+
+// ─── Orchestrator Direct Chat ────────────────────────────────────────
+// Sends the user's message directly to the master model with no council
+// dispatch. Useful for prompt iteration, meta-questions, or 1-on-1 chat.
+
+async function runOrchestratorChat(
+  userQuestion: string,
+  masterModel: MasterModelConfig,
+  getApiKey: (service: string) => Promise<string | null>,
+  onEntryComplete: (entry: DiscussionEntry) => void,
+  set: SetState,
+): Promise<void> {
+  set({ state: 'orchestrator_turn' });
+
+  try {
+    const masterApiKey = await getApiKey(
+      `com.council-of-ai-agents.${masterModel.provider}`,
+    );
+    if (!masterApiKey) {
+      set({
+        state: 'error',
+        error: `No API key found for master model (${masterModel.provider})`,
+      });
+      return;
+    }
+
+    const messages: ChatMessage[] = [
+      { role: 'user', content: userQuestion },
+    ];
+
+    const streamId = uuidv4();
+    set({ currentStreamId: streamId, currentStreamContent: '' });
+
+    const unlisten = await tauri.onStreamToken(streamId, (token) => {
+      if (!token.done && !token.error) {
+        set((s) => ({
+          currentStreamContent: s.currentStreamContent + token.token,
+        }));
+      }
+    });
+
+    const result = await tauri.streamChat(
+      masterModel.provider,
+      masterModel.model,
+      messages,
+      'You are an AI orchestrator. The user is speaking to you directly. There is no council involved in this conversation. Provide helpful, thoughtful, and direct responses.',
+      masterApiKey,
+      streamId,
+    );
+
+    unlisten();
+    set({ currentStreamId: null, currentStreamContent: '' });
+
+    onEntryComplete({
+      role: 'orchestrator_message',
+      provider: masterModel.provider,
+      model: masterModel.model,
+      content: result.content,
+      usage: result.usage,
+    });
+
+    set({ state: 'complete' });
+  } catch (err) {
+    if (String(err).includes('aborted')) return;
+    set({ state: 'error', error: `Orchestrator chat failed: ${err}` });
   }
 }

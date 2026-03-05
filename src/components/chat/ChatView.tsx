@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { Send, ArrowDownUp, Layers } from 'lucide-react';
+import { Send, Square, ArrowDownUp, Layers, Crown } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import UserMessage from './UserMessage';
 import ModelResponse from './ModelResponse';
@@ -16,6 +16,7 @@ import { useSettingsStore } from '../../stores/settingsStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { getApiKey, streamChat, onStreamToken } from '../../lib/tauri';
 import type { DiscussionEntry, Provider, Session } from '../../types';
+import { deriveSystemPromptMode } from '../../types';
 
 // ─── StreamingSection ────────────────────────────────────────────────
 // Isolated component that subscribes to streaming-related store state.
@@ -94,6 +95,14 @@ const StreamingSection = memo(function StreamingSection({ entries }: StreamingSe
         />
       )}
 
+      {councilState === 'orchestrator_turn' && (
+        <MasterVerdict
+          content={currentStreamContent}
+          isStreaming={true}
+          isThinking={!currentStreamContent}
+        />
+      )}
+
       {councilState === 'follow_up' && followUpInProgress && (() => {
         const lastFQ = [...entries].reverse().find(e => e.role === 'follow_up_question');
         if (!lastFQ || lastFQ.role !== 'follow_up_question') return null;
@@ -141,6 +150,9 @@ export default function ChatView() {
   const councilReset = useCouncilStore((s) => s.reset);
   const startDiscussion = useCouncilStore((s) => s.startDiscussion);
   const sendFollowUp = useCouncilStore((s) => s.sendFollowUp);
+  const sendOrchestratorFollowUp = useCouncilStore((s) => s.sendOrchestratorFollowUp);
+  const stopDiscussion = useCouncilStore((s) => s.stopDiscussion);
+  const isStopping = useCouncilStore((s) => s.isStopping);
 
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
@@ -299,6 +311,26 @@ export default function ChatView() {
       return;
     }
 
+    // === Orchestrator follow-up: detect orchestrator session and route directly ===
+    const hasOrchestratorMessage = activeSession && entriesRef.current.some(e => e.role === 'orchestrator_message');
+    if (hasOrchestratorMessage && !selectedMention && (councilState === 'complete' || councilState === 'idle')) {
+      setInput('');
+      await sendOrchestratorFollowUp(
+        question,
+        entriesRef.current,
+        settings.masterModel,
+        getApiKey,
+        handleEntryComplete,
+      );
+      updateActiveSession({ discussion: entriesRef.current });
+      try {
+        await saveCurrentSession(settings.sessionSavePath);
+      } catch (err) {
+        console.error('Failed to save orchestrator follow-up:', err);
+      }
+      return;
+    }
+
     // === No @mention but session has a verdict → prompt user to pick a model ===
     // Instead of starting a brand-new council, keep them in the same session
     if (!selectedMention && hasVerdict && (councilState === 'complete' || councilState === 'idle')) {
@@ -320,6 +352,11 @@ export default function ChatView() {
     setEntries([]);
     entriesRef.current = [];
 
+    // Look up active preset for custom system prompts
+    const activePreset = settings.activePresetId
+      ? settings.councilPresets.find(p => p.id === settings.activePresetId)
+      : undefined;
+
     // Create a new session with placeholder title
     const session: Session = {
       id: uuidv4(),
@@ -330,8 +367,10 @@ export default function ChatView() {
       councilConfig: {
         models: settings.councilModels,
         masterModel: settings.masterModel,
-        systemPromptMode: settings.systemPromptMode,
+        ...(settings.discussionMode === 'parallel' ? { summarizerModel: settings.summarizerModel } : {}),
+        systemPromptMode: deriveSystemPromptMode(settings.discussionMode) ?? 'upfront',
         discussionMode: settings.discussionMode,
+        ...(activePreset ? { presetId: activePreset.id, presetName: activePreset.name } : {}),
       },
       discussion: [],
     };
@@ -353,11 +392,12 @@ export default function ChatView() {
       question,
       settings.councilModels,
       settings.masterModel,
-      settings.systemPromptMode,
       settings.discussionDepth,
       settings.discussionMode,
       getApiKey,
       handleEntryComplete,
+      activePreset?.customSystemPrompts,
+      settings.discussionMode === 'parallel' ? settings.summarizerModel : undefined,
     );
 
     // Final save with all collected entries
@@ -420,8 +460,9 @@ export default function ChatView() {
   };
 
   const isProcessing = councilState !== 'idle' && councilState !== 'complete' && councilState !== 'error';
-  const hasModels = settings.councilModels.length > 0;
-  const canFollowUp = activeSession != null && entries.some(e => e.role === 'master_verdict');
+  const isOrchestratorMode = settings.discussionMode === 'orchestrator';
+  const hasModels = isOrchestratorMode || settings.councilModels.length > 0;
+  const canFollowUp = activeSession != null && entries.some(e => e.role === 'master_verdict' || e.role === 'orchestrator_message');
 
   return (
     <div className="flex flex-col h-full">
@@ -531,6 +572,11 @@ export default function ChatView() {
                     />
                   );
                 }
+                if (entry.role === 'orchestrator_message') {
+                  return (
+                    <MasterVerdict key={`orch-${i}`} content={entry.content} />
+                  );
+                }
                 return null;
               })}
             </AnimatePresence>
@@ -566,9 +612,13 @@ export default function ChatView() {
               placeholder={
                 !hasModels
                   ? 'Configure your models in Settings first...'
-                  : canFollowUp
-                    ? 'Ask the council... or @mention a model to follow up'
-                    : 'Ask the council for advice...'
+                  : isOrchestratorMode
+                    ? canFollowUp
+                      ? 'Continue chatting with the orchestrator...'
+                      : 'Chat with the orchestrator...'
+                    : canFollowUp
+                      ? 'Ask the council... or @mention a model to follow up'
+                      : 'Ask the council for advice...'
               }
               rows={1}
               disabled={isProcessing || !hasModels}
@@ -580,14 +630,25 @@ export default function ChatView() {
                 target.style.height = Math.min(target.scrollHeight, 120) + 'px';
               }}
             />
-            <Button
-              onClick={handleSubmit}
-              disabled={!input.trim() || isProcessing || !hasModels}
-              size="sm"
-              className="flex-shrink-0"
-            >
-              <Send size={16} />
-            </Button>
+            {isProcessing ? (
+              <Button
+                onClick={stopDiscussion}
+                disabled={isStopping}
+                size="sm"
+                className="flex-shrink-0 !bg-red-500 hover:!bg-red-600 !border-red-500 hover:!border-red-600 !text-white"
+              >
+                <Square size={14} fill="currentColor" />
+              </Button>
+            ) : (
+              <Button
+                onClick={handleSubmit}
+                disabled={!input.trim() || !hasModels}
+                size="sm"
+                className="flex-shrink-0"
+              >
+                <Send size={16} />
+              </Button>
+            )}
           </div>
           {/* Discussion mode toggle — only visible before a discussion starts */}
           {!isProcessing && !canFollowUp && (
@@ -614,15 +675,30 @@ export default function ChatView() {
                 <Layers size={12} />
                 Parallel
               </button>
+              <button
+                onClick={() => updateSettings({ discussionMode: 'orchestrator' })}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                  settings.discussionMode === 'orchestrator'
+                    ? 'bg-[var(--color-accent-light)] text-[var(--color-accent)] border border-[var(--color-accent)]'
+                    : 'text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] border border-transparent hover:border-[var(--color-border-primary)]'
+                }`}
+              >
+                <Crown size={12} />
+                Orchestrator
+              </button>
             </div>
           )}
           {isProcessing && (
             <p className="mt-2 text-xs text-center text-[var(--color-text-tertiary)]">
-              {councilState === 'follow_up'
-                ? 'Getting follow-up response...'
-                : councilState === 'parallel_model_turns'
-                  ? 'Council models are deliberating in parallel...'
-                  : 'Council is deliberating...'}
+              {isStopping
+                ? 'Stopping...'
+                : councilState === 'orchestrator_turn'
+                  ? 'Orchestrator is responding...'
+                  : councilState === 'follow_up'
+                    ? 'Getting follow-up response...'
+                    : councilState === 'parallel_model_turns'
+                      ? 'Council models are deliberating in parallel...'
+                      : 'Council is deliberating...'}
             </p>
           )}
         </div>

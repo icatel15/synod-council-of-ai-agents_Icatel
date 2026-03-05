@@ -1,5 +1,9 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
 use futures::StreamExt;
-use tauri::{command, AppHandle, Emitter};
+use tauri::{command, AppHandle, Emitter, State};
 
 use crate::models::config::{ChatMessage, Provider, StreamChatResult, StreamToken, UsageData};
 use crate::providers::{
@@ -8,9 +12,15 @@ use crate::providers::{
     openrouter::OpenRouterProvider, together::TogetherProvider, xai::XAIProvider, StreamEvent,
 };
 
+#[derive(Default)]
+pub struct ActiveStreams {
+    pub streams: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
 #[command]
 pub async fn stream_chat(
     app: AppHandle,
+    active_streams: State<'_, ActiveStreams>,
     provider: Provider,
     model: String,
     messages: Vec<ChatMessage>,
@@ -18,6 +28,12 @@ pub async fn stream_chat(
     api_key: String,
     stream_id: String,
 ) -> Result<StreamChatResult, String> {
+    // Register this stream's cancel flag
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut streams = active_streams.streams.lock().unwrap();
+        streams.insert(stream_id.clone(), cancel_flag.clone());
+    }
     let system_ref = system_prompt.as_deref();
     let event_name = format!("stream-token-{}", stream_id);
 
@@ -69,6 +85,24 @@ pub async fn stream_chat(
             };
 
             while let Some(event_result) = stream.next().await {
+                // Check cancel flag before processing each chunk
+                if cancel_flag.load(Ordering::Relaxed) {
+                    let _ = app.emit(
+                        &event_name,
+                        StreamToken {
+                            stream_id: stream_id.clone(),
+                            token: String::new(),
+                            done: true,
+                            error: Some("aborted".to_string()),
+                            usage: None,
+                        },
+                    );
+                    // Cleanup
+                    let mut streams = active_streams.streams.lock().unwrap();
+                    streams.remove(&stream_id);
+                    return Err("aborted".to_string());
+                }
+
                 match event_result {
                     Ok(StreamEvent::Token(token)) => {
                         full_response.push_str(&token);
@@ -94,6 +128,10 @@ pub async fn stream_chat(
                         accumulated_usage.output_tokens = accumulated_usage.output_tokens.max(usage.output_tokens);
                     }
                     Err(e) => {
+                        // Cleanup on error
+                        let mut streams = active_streams.streams.lock().unwrap();
+                        streams.remove(&stream_id);
+
                         let _ = app.emit(
                             &event_name,
                             StreamToken {
@@ -107,6 +145,12 @@ pub async fn stream_chat(
                         return Err(e.to_string());
                     }
                 }
+            }
+
+            // Cleanup after normal completion
+            {
+                let mut streams = active_streams.streams.lock().unwrap();
+                streams.remove(&stream_id);
             }
 
             // Emit final done event
@@ -134,6 +178,12 @@ pub async fn stream_chat(
             })
         }
         Err(e) => {
+            // Cleanup on provider error
+            {
+                let mut streams = active_streams.streams.lock().unwrap();
+                streams.remove(&stream_id);
+            }
+
             let _ = app.emit(
                 &event_name,
                 StreamToken {
@@ -147,4 +197,17 @@ pub async fn stream_chat(
             Err(e.to_string())
         }
     }
+}
+
+#[command]
+pub async fn abort_stream(
+    active_streams: State<'_, ActiveStreams>,
+    stream_id: String,
+) -> Result<(), String> {
+    let streams = active_streams.streams.lock().unwrap();
+    if let Some(flag) = streams.get(&stream_id) {
+        flag.store(true, Ordering::Relaxed);
+    }
+    // Return Ok even if stream already finished (benign race)
+    Ok(())
 }

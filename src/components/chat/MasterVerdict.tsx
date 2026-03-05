@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Scale, Copy, Check } from 'lucide-react';
+import { Scale, Copy, Check, Download } from 'lucide-react';
 import StreamingText from './StreamingText';
 import ThinkingIndicator from './ThinkingIndicator';
 
@@ -22,6 +22,19 @@ export default memo(function MasterVerdict({
     await navigator.clipboard.writeText(content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownload = () => {
+    const markdown = `# Final Verdict\n\n${content}`;
+    const blob = new Blob([markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'final-verdict.md';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const motionProps = hasAnimated
@@ -46,13 +59,24 @@ export default memo(function MasterVerdict({
                 Final Verdict
               </span>
               {content && !isThinking && (
-                <button
-                  onClick={handleCopy}
-                  className="ml-auto p-1.5 rounded-[var(--radius-sm)] text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] hover:bg-[var(--color-bg-hover)] transition-colors"
-                  title={copied ? 'Copied!' : 'Copy verdict'}
-                >
-                  {copied ? <Check size={14} /> : <Copy size={14} />}
-                </button>
+                <div className="ml-auto flex items-center gap-0.5">
+                  {!isStreaming && (
+                    <button
+                      onClick={handleDownload}
+                      className="p-1.5 rounded-[var(--radius-sm)] text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] hover:bg-[var(--color-bg-hover)] transition-colors"
+                      title="Download as Markdown"
+                    >
+                      <Download size={14} />
+                    </button>
+                  )}
+                  <button
+                    onClick={handleCopy}
+                    className="p-1.5 rounded-[var(--radius-sm)] text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] hover:bg-[var(--color-bg-hover)] transition-colors"
+                    title={copied ? 'Copied!' : 'Copy verdict'}
+                  >
+                    {copied ? <Check size={14} /> : <Copy size={14} />}
+                  </button>
+                </div>
               )}
             </div>
 

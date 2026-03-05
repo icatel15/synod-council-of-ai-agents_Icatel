@@ -7,10 +7,14 @@ import {
   Trash2,
   Search,
   X,
+  Crown,
+  Pencil,
 } from 'lucide-react';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useCouncilStore } from '../../stores/councilStore';
+import PresetEditorModal from '../presets/PresetEditorModal';
+import type { CouncilPreset } from '../../types';
 
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr);
@@ -50,8 +54,14 @@ function groupSessions(
 export default function Sidebar() {
   const { sessions, activeSession, loadSessions, loadAndSetSession, setActiveSession, deleteSession } =
     useSessionStore();
-  const sessionSavePath = useSettingsStore((s) => s.settings.sessionSavePath);
+  const settings = useSettingsStore((s) => s.settings);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const sessionSavePath = settings.sessionSavePath;
   const councilReset = useCouncilStore((s) => s.reset);
+
+  // Preset editor state
+  const [showPresetEditor, setShowPresetEditor] = useState(false);
+  const [editingPreset, setEditingPreset] = useState<CouncilPreset | undefined>(undefined);
 
   useEffect(() => {
     loadSessions(sessionSavePath);
@@ -71,6 +81,33 @@ export default function Sidebar() {
   const handleDeleteSession = (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
     deleteSession(sessionId, sessionSavePath);
+  };
+
+  const handleActivatePreset = (preset: CouncilPreset) => {
+    if (settings.activePresetId === preset.id) {
+      // Deactivate
+      updateSettings({ activePresetId: null });
+    } else {
+      // Activate: copy preset config into top-level settings
+      updateSettings({
+        councilModels: preset.councilModels,
+        masterModel: preset.masterModel,
+        discussionMode: preset.discussionMode,
+        discussionDepth: preset.discussionDepth,
+        activePresetId: preset.id,
+      });
+    }
+  };
+
+  const handleEditPreset = (e: React.MouseEvent, preset: CouncilPreset) => {
+    e.stopPropagation();
+    setEditingPreset(preset);
+    setShowPresetEditor(true);
+  };
+
+  const handleNewPreset = () => {
+    setEditingPreset(undefined);
+    setShowPresetEditor(true);
   };
 
   const [search, setSearch] = useState('');
@@ -98,6 +135,61 @@ export default function Sidebar() {
           <span>New Session</span>
         </button>
       </div>
+
+      {/* Councils section */}
+      <div className="px-3 pb-2">
+        <div className="flex items-center justify-between mb-1.5">
+          <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+            Councils
+          </p>
+          <button
+            onClick={handleNewPreset}
+            className="p-0.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] transition-colors"
+            title="New preset"
+          >
+            <Plus size={13} />
+          </button>
+        </div>
+        {settings.councilPresets.length > 0 ? (
+          <div className="space-y-0.5">
+            {settings.councilPresets.map((preset) => (
+              <button
+                key={preset.id}
+                onClick={() => handleActivatePreset(preset)}
+                className={`group w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-xs rounded-[var(--radius-md)] transition-all ${
+                  settings.activePresetId === preset.id
+                    ? 'bg-[var(--color-accent-light)] text-[var(--color-accent)] border border-[var(--color-accent)]'
+                    : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] border border-transparent'
+                }`}
+              >
+                <Crown size={12} className="flex-shrink-0 opacity-60" />
+                <span className="flex-1 truncate font-medium">{preset.name}</span>
+                <button
+                  onClick={(e) => handleEditPreset(e, preset)}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-[var(--color-accent)] transition-all"
+                  title="Edit preset"
+                >
+                  <Pencil size={11} />
+                </button>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[10px] text-[var(--color-text-tertiary)] italic px-1">
+            No presets yet
+          </p>
+        )}
+      </div>
+
+      {/* Preset Editor Modal */}
+      <PresetEditorModal
+        isOpen={showPresetEditor}
+        onClose={() => {
+          setShowPresetEditor(false);
+          setEditingPreset(undefined);
+        }}
+        preset={editingPreset}
+      />
 
       {/* Search sessions */}
       {sessions.length > 0 && (

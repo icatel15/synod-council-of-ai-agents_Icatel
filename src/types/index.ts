@@ -12,26 +12,72 @@ export interface MasterModelConfig {
   model: string;
 }
 
+export interface SummarizerModelConfig {
+  provider: Provider;
+  model: string;
+  systemPrompt: string;
+}
+
+export const DEFAULT_SUMMARIZER_SYSTEM_PROMPT = `You are an expert synthesizer. You have received independent analyses from multiple AI models on the user's question. Your job is to produce a comprehensive, high-quality final output that:
+
+1. Preserves the FULL depth and detail from the best individual responses
+2. Integrates complementary insights across all models
+3. Resolves contradictions with clear reasoning
+4. Maintains specific examples, code snippets, and actionable recommendations
+5. Structures the output clearly with sections and formatting
+
+Do NOT summarize briefly. The user wants the COMPLETE synthesized knowledge, not a summary. Your output should be at least as detailed as the most detailed individual response. Aim for thoroughness over brevity.`;
+
 export type SystemPromptMode = 'upfront' | 'dynamic';
 
 export type DiscussionDepth = 'thorough' | 'concise';
 
-export type DiscussionMode = 'sequential' | 'parallel';
+export type DiscussionMode = 'sequential' | 'parallel' | 'orchestrator';
+
+/**
+ * Derives the system prompt mode from the discussion mode.
+ * Sequential → dynamic (master steers each turn with discussion context)
+ * Parallel → upfront (models respond simultaneously)
+ * Orchestrator → null (no council, no prompts)
+ */
+export function deriveSystemPromptMode(mode: DiscussionMode): SystemPromptMode | null {
+  switch (mode) {
+    case 'sequential': return 'dynamic';
+    case 'parallel': return 'upfront';
+    case 'orchestrator': return null;
+  }
+}
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 
 export type CursorStyle = 'ripple' | 'breathing' | 'orbit' | 'multi';
 
+export interface CouncilPreset {
+  id: string;
+  name: string;
+  councilModels: ModelConfig[];
+  masterModel: MasterModelConfig;
+  summarizerModel?: SummarizerModelConfig;
+  customSystemPrompts: Record<string, string>;
+  discussionMode: DiscussionMode;
+  discussionDepth: DiscussionDepth;
+  systemPromptMode: SystemPromptMode;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AppSettings {
   councilModels: ModelConfig[];
   masterModel: MasterModelConfig;
-  systemPromptMode: SystemPromptMode;
+  summarizerModel: SummarizerModelConfig;
   discussionDepth: DiscussionDepth;
   discussionMode: DiscussionMode;
   theme: ThemeMode;
   cursorStyle: CursorStyle;
   sessionSavePath: string | null;
   setupCompleted: boolean;
+  councilPresets: CouncilPreset[];
+  activePresetId: string | null;
 }
 
 export interface ChatMessage {
@@ -90,18 +136,30 @@ export interface DiscussionEntryFollowUpAnswer {
   usage?: UsageData;
 }
 
+export interface DiscussionEntryOrchestratorMessage {
+  role: 'orchestrator_message';
+  provider: string;
+  model: string;
+  content: string;
+  usage?: UsageData;
+}
+
 export type DiscussionEntry =
   | DiscussionEntryUser
   | DiscussionEntryModel
   | DiscussionEntryMasterVerdict
   | DiscussionEntryFollowUpQuestion
-  | DiscussionEntryFollowUpAnswer;
+  | DiscussionEntryFollowUpAnswer
+  | DiscussionEntryOrchestratorMessage;
 
 export interface CouncilConfig {
   models: ModelConfig[];
   masterModel: MasterModelConfig;
+  summarizerModel?: SummarizerModelConfig;
   systemPromptMode: SystemPromptMode;
   discussionMode?: DiscussionMode;
+  presetId?: string;
+  presetName?: string;
 }
 
 export interface Session {
@@ -142,6 +200,7 @@ export type CouncilState =
   | 'parallel_model_turns'
   | 'clarifying_qa'
   | 'master_verdict'
+  | 'orchestrator_turn'
   | 'complete'
   | 'follow_up'
   | 'error';

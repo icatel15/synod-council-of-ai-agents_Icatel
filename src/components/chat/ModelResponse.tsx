@@ -1,5 +1,5 @@
 import { memo, useState } from 'react';
-import { Bot, Copy, Check, ChevronDown, ChevronRight } from 'lucide-react';
+import { Bot, Copy, Check, Download, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
 import StreamingText from './StreamingText';
 import ThinkingIndicator from './ThinkingIndicator';
 import { getProviderColor } from '../../types';
@@ -30,8 +30,8 @@ export default memo(function ModelResponse({
   const color = getProviderColor(provider as Provider);
   const [copied, setCopied] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
-  // Completed (non-streaming) responses start collapsed
-  const [expanded, setExpanded] = useState(isStreaming || isThinking);
+  // All responses start collapsed — users expand on demand
+  const [expanded, setExpanded] = useState(false);
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -40,32 +40,38 @@ export default memo(function ModelResponse({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleDownload = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const markdown = `# ${displayName}\n\n${content}`;
+    const blob = new Blob([markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${displayName.replace(/[^a-zA-Z0-9-_]/g, '-')}-response.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const handlePromptClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     setShowPrompt((v) => !v);
   };
 
-  // Always show content while streaming/thinking
-  const showContent = isStreaming || isThinking || expanded;
+  const showContent = expanded;
 
   return (
     <div className="model-response-enter">
-      {/* Sticky header — clickable to expand/collapse */}
+      {/* Sticky header — always clickable to expand/collapse */}
       <div className="sticky top-0 z-10 bg-[var(--color-bg-primary)]">
         <div
-          className={`px-6 py-2.5 flex items-center gap-3 ${
-            !isStreaming && !isThinking ? 'cursor-pointer hover:bg-[var(--color-bg-hover)]' : ''
-          } transition-colors`}
-          onClick={() => {
-            if (!isStreaming && !isThinking) setExpanded((v) => !v);
-          }}
+          className="px-6 py-2.5 flex items-center gap-3 cursor-pointer hover:bg-[var(--color-bg-hover)] transition-colors"
+          onClick={() => setExpanded((v) => !v)}
         >
-          {/* Expand/collapse chevron for completed responses */}
-          {!isStreaming && !isThinking && (
-            <span className="flex-shrink-0 text-[var(--color-text-tertiary)]">
-              {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            </span>
-          )}
+          <span className="flex-shrink-0 text-[var(--color-text-tertiary)]">
+            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </span>
           <div
             className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center"
             style={{ backgroundColor: `${color}20` }}
@@ -89,6 +95,9 @@ export default memo(function ModelResponse({
               Follow-up
             </span>
           )}
+          {(isStreaming || isThinking) && (
+            <Loader2 size={14} className="animate-spin flex-shrink-0" style={{ color }} />
+          )}
           {systemPrompt && !isStreaming && (
             <button
               onClick={handlePromptClick}
@@ -100,13 +109,24 @@ export default memo(function ModelResponse({
             </button>
           )}
           {content && !isThinking && (
-            <button
-              onClick={handleCopy}
-              className="ml-auto p-1.5 rounded-[var(--radius-sm)] text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] hover:bg-[var(--color-bg-hover)] transition-colors"
-              title={copied ? 'Copied!' : 'Copy response'}
-            >
-              {copied ? <Check size={14} /> : <Copy size={14} />}
-            </button>
+            <div className="ml-auto flex items-center gap-0.5">
+              {!isStreaming && (
+                <button
+                  onClick={handleDownload}
+                  className="p-1.5 rounded-[var(--radius-sm)] text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] hover:bg-[var(--color-bg-hover)] transition-colors"
+                  title="Download as Markdown"
+                >
+                  <Download size={14} />
+                </button>
+              )}
+              <button
+                onClick={handleCopy}
+                className="p-1.5 rounded-[var(--radius-sm)] text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] hover:bg-[var(--color-bg-hover)] transition-colors"
+                title={copied ? 'Copied!' : 'Copy response'}
+              >
+                {copied ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+            </div>
           )}
         </div>
         <div className="h-px bg-[var(--color-border-primary)]" />

@@ -8,6 +8,7 @@ use commands::{api_calls, keychain, sessions, settings};
 pub fn run() {
     tauri::Builder::default()
         .manage(keychain::ApiKeyCache::default())
+        .manage(api_calls::ActiveStreams::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
@@ -26,6 +27,7 @@ pub fn run() {
             keychain::delete_api_key,
             keychain::has_api_key,
             api_calls::stream_chat,
+            api_calls::abort_stream,
             sessions::save_session,
             sessions::load_session,
             sessions::list_sessions,
