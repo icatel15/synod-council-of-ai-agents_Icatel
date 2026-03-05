@@ -6,6 +6,7 @@ pub mod deepseek;
 pub mod mistral;
 pub mod together;
 pub mod cohere;
+pub mod openrouter;
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;

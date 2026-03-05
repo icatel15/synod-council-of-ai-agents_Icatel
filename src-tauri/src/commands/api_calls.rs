@@ -5,7 +5,7 @@ use crate::models::config::{ChatMessage, Provider, StreamChatResult, StreamToken
 use crate::providers::{
     anthropic::AnthropicProvider, cohere::CohereProvider, deepseek::DeepSeekProvider,
     google::GoogleProvider, mistral::MistralProvider, openai::OpenAIProvider,
-    together::TogetherProvider, xai::XAIProvider, StreamEvent,
+    openrouter::OpenRouterProvider, together::TogetherProvider, xai::XAIProvider, StreamEvent,
 };
 
 #[command]
@@ -52,6 +52,10 @@ pub async fn stream_chat(
         }
         Provider::Cohere => {
             let p = CohereProvider::new();
+            p.stream_chat(&api_key, &model, &messages, system_ref).await
+        }
+        Provider::OpenRouter => {
+            let p = OpenRouterProvider::new();
             p.stream_chat(&api_key, &model, &messages, system_ref).await
         }
     };

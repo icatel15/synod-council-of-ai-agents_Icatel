@@ -12,6 +12,7 @@ pub enum Provider {
     Mistral,
     Together,
     Cohere,
+    OpenRouter,
 }
 
 #[allow(dead_code)]
@@ -26,6 +27,7 @@ impl Provider {
             Provider::Mistral => "Mistral",
             Provider::Together => "Together AI",
             Provider::Cohere => "Cohere",
+            Provider::OpenRouter => "OpenRouter",
         }
     }
 
@@ -39,6 +41,7 @@ impl Provider {
             Provider::Mistral => "com.council-of-ai-agents.mistral",
             Provider::Together => "com.council-of-ai-agents.together",
             Provider::Cohere => "com.council-of-ai-agents.cohere",
+            Provider::OpenRouter => "com.council-of-ai-agents.openrouter",
         }
     }
 }

@@ -348,6 +348,7 @@ export default function ModelManager() {
   const [showAddModel, setShowAddModel] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<Provider>('anthropic');
   const [selectedModel, setSelectedModel] = useState('');
+  const [customModelId, setCustomModelId] = useState('');
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -371,27 +372,37 @@ export default function ModelManager() {
   };
 
   const handleAddModel = () => {
-    if (!selectedModel) return;
+    const isCustom = selectedProvider === 'openrouter' && customModelId.trim();
+    const modelId = isCustom ? customModelId.trim() : selectedModel;
 
-    const provider = PROVIDERS.find((p) => p.id === selectedProvider)!;
-    const model = provider.models.find((m) => m.id === selectedModel)!;
+    if (!modelId) return;
 
     // Check for duplicates
     const exists = settings.councilModels.some(
-      (m) => m.provider === selectedProvider && m.model === selectedModel,
+      (m) => m.provider === selectedProvider && m.model === modelId,
     );
     if (exists) return;
 
+    let displayName: string;
+    if (isCustom) {
+      displayName = modelId;
+    } else {
+      const provider = PROVIDERS.find((p) => p.id === selectedProvider)!;
+      const model = provider.models.find((m) => m.id === modelId)!;
+      displayName = model.name;
+    }
+
     const newModel: ModelConfig = {
       provider: selectedProvider,
-      model: selectedModel,
-      displayName: model.name,
+      model: modelId,
+      displayName,
       order: settings.councilModels.length + 1,
     };
 
     updateSettings({ councilModels: [...settings.councilModels, newModel] });
     setShowAddModel(false);
     setSelectedModel('');
+    setCustomModelId('');
   };
 
   const handleRemoveModel = (index: number) => {
@@ -452,6 +463,7 @@ export default function ModelManager() {
               onChange={(e) => {
                 setSelectedProvider(e.target.value as Provider);
                 setSelectedModel('');
+                setCustomModelId('');
               }}
               className="w-full px-3 py-1.5 text-sm bg-[var(--color-bg-input)] border border-[var(--color-border-primary)] rounded-[var(--radius-sm)] text-[var(--color-text-primary)]"
             >
@@ -463,7 +475,10 @@ export default function ModelManager() {
             </select>
             <select
               value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
+              onChange={(e) => {
+                setSelectedModel(e.target.value);
+                if (e.target.value) setCustomModelId('');
+              }}
               className="w-full px-3 py-1.5 text-sm bg-[var(--color-bg-input)] border border-[var(--color-border-primary)] rounded-[var(--radius-sm)] text-[var(--color-text-primary)]"
             >
               <option value="">Select model...</option>
@@ -475,8 +490,22 @@ export default function ModelManager() {
                 ),
               )}
             </select>
+            {selectedProvider === 'openrouter' && (
+              <div>
+                <input
+                  type="text"
+                  value={customModelId}
+                  onChange={(e) => {
+                    setCustomModelId(e.target.value);
+                    if (e.target.value) setSelectedModel('');
+                  }}
+                  placeholder="Or enter custom model ID (e.g. meta-llama/llama-4-maverick-17b-128e-instruct-fp8)"
+                  className="w-full px-3 py-1.5 text-sm bg-[var(--color-bg-input)] border border-[var(--color-border-primary)] rounded-[var(--radius-sm)] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)]"
+                />
+              </div>
+            )}
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleAddModel} disabled={!selectedModel}>
+              <Button size="sm" onClick={handleAddModel} disabled={!selectedModel && !customModelId.trim()}>
                 Add
               </Button>
               <Button

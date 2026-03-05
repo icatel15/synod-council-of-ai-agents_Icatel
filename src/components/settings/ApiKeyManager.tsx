@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Info, Eye, EyeOff, Check, Trash2 } from 'lucide-react';
+import { Info, Check, Trash2 } from 'lucide-react';
 import Button from '../common/Button';
 import ApiKeyInfoPopover from './ApiKeyInfoPopover';
 import { PROVIDERS } from '../../types';
@@ -8,17 +8,17 @@ import * as tauri from '../../lib/tauri';
 
 export default function ApiKeyManager() {
   const [keyStates, setKeyStates] = useState<
-    Record<string, { hasKey: boolean; visible: boolean; value: string; editing: boolean }>
+    Record<string, { hasKey: boolean; value: string; editing: boolean }>
   >({});
   const [openInfo, setOpenInfo] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     async function loadKeyStates() {
-      const states: Record<string, { hasKey: boolean; visible: boolean; value: string; editing: boolean }> = {};
+      const states: Record<string, { hasKey: boolean; value: string; editing: boolean }> = {};
       for (const provider of PROVIDERS) {
         const has = await tauri.hasApiKey(provider.keychainService);
-        states[provider.id] = { hasKey: has, visible: false, value: '', editing: false };
+        states[provider.id] = { hasKey: has, value: '', editing: false };
       }
       if (!cancelled) {
         setKeyStates(states);
@@ -43,24 +43,8 @@ export default function ApiKeyManager() {
     await tauri.deleteApiKey(provider.keychainService);
     setKeyStates((prev) => ({
       ...prev,
-      [provider.id]: { hasKey: false, visible: false, value: '', editing: false },
+      [provider.id]: { hasKey: false, value: '', editing: false },
     }));
-  };
-
-  const handleRevealKey = async (provider: ProviderInfo) => {
-    const state = keyStates[provider.id];
-    if (state?.visible) {
-      setKeyStates((prev) => ({
-        ...prev,
-        [provider.id]: { ...prev[provider.id], visible: false, value: '' },
-      }));
-    } else {
-      const key = await tauri.getApiKey(provider.keychainService);
-      setKeyStates((prev) => ({
-        ...prev,
-        [provider.id]: { ...prev[provider.id], visible: true, value: key || '' },
-      }));
-    }
   };
 
   return (
@@ -112,14 +96,8 @@ export default function ApiKeyManager() {
             {state?.hasKey && !state.editing ? (
               <div className="flex items-center gap-2">
                 <div className="flex-1 px-3 py-1.5 text-sm text-[var(--color-text-tertiary)] bg-[var(--color-bg-input)] border border-[var(--color-border-primary)] rounded-[var(--radius-sm)] font-mono">
-                  {state.visible ? state.value : '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'}
+                  {'\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'}
                 </div>
-                <button
-                  onClick={() => handleRevealKey(provider)}
-                  className="p-1.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-                >
-                  {state.visible ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
                 <button
                   onClick={() =>
                     setKeyStates((prev) => ({

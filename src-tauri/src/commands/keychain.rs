@@ -26,6 +26,7 @@ pub const LEGACY_SERVICES: &[(&str, &str)] = &[
     ("mistral", "com.council-of-ai-agents.mistral"),
     ("together", "com.council-of-ai-agents.together"),
     ("cohere", "com.council-of-ai-agents.cohere"),
+    ("openrouter", "com.council-of-ai-agents.openrouter"),
 ];
 
 /// In-memory cache for API keys. `None` means not loaded yet.

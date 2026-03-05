@@ -1,4 +1,4 @@
-export type Provider = 'anthropic' | 'openai' | 'google' | 'xai' | 'deepseek' | 'mistral' | 'together' | 'cohere';
+export type Provider = 'anthropic' | 'openai' | 'google' | 'xai' | 'deepseek' | 'mistral' | 'together' | 'cohere' | 'openrouter';
 
 export interface ModelConfig {
   provider: Provider;
@@ -301,6 +301,37 @@ export const PROVIDERS: ProviderInfo[] = [
       'Copy the generated API key',
     ],
   },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    keychainService: 'com.council-of-ai-agents.openrouter',
+    models: [
+      { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6 (OR)' },
+      { id: 'anthropic/claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (OR)' },
+      { id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5 (OR)' },
+      { id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5 (OR)' },
+      { id: 'openai/gpt-4o', name: 'GPT-4o (OR)' },
+      { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini (OR)' },
+      { id: 'openai/o3-mini', name: 'o3-mini (OR)' },
+      { id: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro (OR)' },
+      { id: 'google/gemini-2.0-flash', name: 'Gemini 2.0 Flash (OR)' },
+      { id: 'meta-llama/llama-3.1-405b-instruct', name: 'Llama 3.1 405B (OR)' },
+      { id: 'meta-llama/llama-3.1-70b-instruct', name: 'Llama 3.1 70B (OR)' },
+      { id: 'deepseek/deepseek-chat', name: 'DeepSeek Chat (OR)' },
+      { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1 (OR)' },
+      { id: 'mistralai/mistral-large-latest', name: 'Mistral Large (OR)' },
+      { id: 'cohere/command-r-plus', name: 'Command R+ (OR)' },
+      { id: 'qwen/qwen-2.5-72b-instruct', name: 'Qwen 2.5 72B (OR)' },
+    ],
+    apiKeyUrl: 'https://openrouter.ai/keys',
+    apiKeySteps: [
+      'Go to openrouter.ai',
+      'Sign in or create an account',
+      'Navigate to Keys in the sidebar',
+      'Click "Create Key"',
+      'Copy the generated API key (it starts with "sk-or-")',
+    ],
+  },
 ];
 
 export function getProviderInfo(providerId: Provider): ProviderInfo {
@@ -325,5 +356,7 @@ export function getProviderColor(provider: Provider): string {
       return '#6366F1';
     case 'cohere':
       return '#39594D';
+    case 'openrouter':
+      return '#B366FF';
   }
 }
