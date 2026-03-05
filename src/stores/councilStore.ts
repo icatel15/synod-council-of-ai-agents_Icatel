@@ -15,6 +15,42 @@ import type {
 } from '../types';
 import * as tauri from '../lib/tauri';
 
+// ─── Token Batching ──────────────────────────────────────────────────
+// Buffers streaming tokens and flushes to Zustand once per animation
+// frame instead of on every token. Reduces React re-renders from ~100/s
+// to ~60/s and avoids per-token GC pressure from string concatenation.
+
+function createBatchedTokenHandler(
+  updateFn: (buffered: string) => void,
+): (token: { token: string; done: boolean; error?: string }) => void {
+  let buffer = '';
+  let rafId = 0;
+
+  return (token) => {
+    if (token.done || token.error) {
+      // Flush remaining buffer on stream end so no tokens are lost
+      if (buffer) {
+        cancelAnimationFrame(rafId);
+        updateFn(buffer);
+        buffer = '';
+        rafId = 0;
+      }
+      return;
+    }
+
+    buffer += token.token;
+    if (rafId === 0) {
+      rafId = requestAnimationFrame(() => {
+        if (buffer) {
+          updateFn(buffer);
+          buffer = '';
+        }
+        rafId = 0;
+      });
+    }
+  };
+}
+
 interface CouncilStoreState {
   state: CouncilState;
   currentModelIndex: number;
@@ -238,13 +274,9 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
         const streamId = uuidv4();
         set({ currentStreamId: streamId, currentStreamContent: '' });
 
-        const unlisten = await tauri.onStreamToken(streamId, (token) => {
-          if (!token.done && !token.error) {
-            set((s) => ({
-              currentStreamContent: s.currentStreamContent + token.token,
-            }));
-          }
-        });
+        const unlisten = await tauri.onStreamToken(streamId, createBatchedTokenHandler((buffered) => {
+          set((s) => ({ currentStreamContent: s.currentStreamContent + buffered }));
+        }));
 
         const result = await tauri.streamChat(
           model.provider,
@@ -258,8 +290,12 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
         unlisten();
         set({ currentStreamId: null, currentStreamContent: '' });
 
-        // Check if first model asked a clarifying question
-        if (i === 0 && looksLikeClarifyingQuestion(result.content)) {
+        // Check if first model asked a clarifying question (classified by master model)
+        const needsClarification = i === 0
+          ? await classifyFirstResponse(result.content, masterModel, getApiKey)
+          : false;
+
+        if (needsClarification) {
           set({
             state: 'clarifying_qa',
             waitingForClarification: true,
@@ -300,13 +336,9 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
 
             const followUpUnlisten = await tauri.onStreamToken(
               followUpStreamId,
-              (token) => {
-                if (!token.done && !token.error) {
-                  set((s) => ({
-                    currentStreamContent: s.currentStreamContent + token.token,
-                  }));
-                }
-              },
+              createBatchedTokenHandler((buffered) => {
+                set((s) => ({ currentStreamContent: s.currentStreamContent + buffered }));
+              }),
             );
 
             const followUpResult = await tauri.streamChat(
@@ -398,13 +430,9 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
       const streamId = uuidv4();
       set({ currentStreamId: streamId, currentStreamContent: '' });
 
-      const unlisten = await tauri.onStreamToken(streamId, (token) => {
-        if (!token.done && !token.error) {
-          set((s) => ({
-            currentStreamContent: s.currentStreamContent + token.token,
-          }));
-        }
-      });
+      const unlisten = await tauri.onStreamToken(streamId, createBatchedTokenHandler((buffered) => {
+        set((s) => ({ currentStreamContent: s.currentStreamContent + buffered }));
+      }));
 
       const masterSystemPrompt = discussionDepth === 'concise'
         ? `You are the master AI judge in a council of AI models. You have reviewed all council members' opinions on the user's question. Deliver a brief, focused verdict in 3-5 sentences. Highlight only the key takeaway and recommended action. No lengthy sections.`
@@ -487,13 +515,9 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
       const streamId = uuidv4();
       set({ currentStreamId: streamId, currentStreamContent: '' });
 
-      const unlisten = await tauri.onStreamToken(streamId, (token) => {
-        if (!token.done && !token.error) {
-          set((s) => ({
-            currentStreamContent: s.currentStreamContent + token.token,
-          }));
-        }
-      });
+      const unlisten = await tauri.onStreamToken(streamId, createBatchedTokenHandler((buffered) => {
+        set((s) => ({ currentStreamContent: s.currentStreamContent + buffered }));
+      }));
 
       const result = await tauri.streamChat(
         targetProvider as Provider,
@@ -574,13 +598,9 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
       const streamId = uuidv4();
       set({ currentStreamId: streamId, currentStreamContent: '' });
 
-      const unlisten = await tauri.onStreamToken(streamId, (token) => {
-        if (!token.done && !token.error) {
-          set((s) => ({
-            currentStreamContent: s.currentStreamContent + token.token,
-          }));
-        }
-      });
+      const unlisten = await tauri.onStreamToken(streamId, createBatchedTokenHandler((buffered) => {
+        set((s) => ({ currentStreamContent: s.currentStreamContent + buffered }));
+      }));
 
       const result = await tauri.streamChat(
         masterModel.provider,
@@ -688,70 +708,57 @@ function getDefaultSystemPrompt(model: ModelConfig, isFirst: boolean, depth: Dis
   return `You are ${model.displayName}, a member of an AI council helping a user make an informed decision. You will see the user's question and previous council members' responses. Provide your own unique perspective and analysis. Do NOT ask any questions to the user. ${depthInstruction} If you agree with previous members, explain why. If you disagree, explain your reasoning.`;
 }
 
-function looksLikeClarifyingQuestion(response: string): boolean {
-  const lowerResponse = response.toLowerCase();
+async function classifyFirstResponse(
+  response: string,
+  masterModel: MasterModelConfig,
+  getApiKey: (service: string) => Promise<string | null>,
+): Promise<boolean> {
+  try {
+    const masterApiKey = await getApiKey(
+      `com.council-of-ai-agents.${masterModel.provider}`,
+    );
+    if (!masterApiKey) return false;
 
-  // Must contain at least one question mark
-  if (!response.includes('?')) return false;
+    const classifyStreamId = uuidv4();
+    const classifyUnlisten = await tauri.onStreamToken(
+      classifyStreamId,
+      () => {},
+    );
 
-  // Phrase-based indicators — model is explicitly asking the user something
-  const phraseIndicators = [
-    'before i provide',
-    'before i run',
-    'before i begin',
-    'before i start',
-    'before i proceed',
-    'before i dive',
-    'before i generate',
-    'before i create',
-    'could you clarify',
-    'can you clarify',
-    'could you specify',
-    'can you specify',
-    'could you tell me',
-    'can you tell me',
-    'could you confirm',
-    'can you confirm',
-    'please confirm',
-    'please clarify',
-    'please let me know',
-    'please specify',
-    'i have a few questions',
-    'i have some questions',
-    'let me ask',
-    'i\'d like to ask',
-    'i need to ask',
-    'to help narrow down',
-    'to better assist',
-    'to give you the best',
-    'what is your preference',
-    'what are your preferences',
-    'do you have a preference',
-    'would you like me to',
-    'would you prefer',
-    'should i include',
-    'should i focus',
-    'how many',
-    'how much',
-    'which option',
-    'which approach',
-    'which would you',
-    'once you confirm',
-    'once you let me know',
-    'what specifically',
-    'what exactly',
-    'do you want me to',
-  ];
+    const classifyResult = await tauri.streamChat(
+      masterModel.provider,
+      masterModel.model,
+      [
+        {
+          role: 'user',
+          content: `A council AI model responded to a user's question. Determine whether the model's response is:
+(A) A complete analysis/answer, OR
+(B) A request for clarification — the model is asking the user to provide more information before it can give a full answer.
 
-  if (phraseIndicators.some((p) => lowerResponse.includes(p))) return true;
+Model's response:
+"""
+${response}
+"""
 
-  // Structural heuristic: response ends with a direct question (last 200 chars contain '?')
-  // AND contains fewer than 3 paragraphs — likely asking rather than analyzing
-  const paragraphs = response.trim().split(/\n\s*\n/).length;
-  const lastChunk = lowerResponse.slice(-200);
-  if (paragraphs <= 3 && lastChunk.includes('?')) return true;
+Reply with ONLY a JSON object: {"needsClarification": true} or {"needsClarification": false}`,
+        },
+      ],
+      'You classify AI model responses. Return only valid JSON.',
+      masterApiKey,
+      classifyStreamId,
+    );
 
-  return false;
+    classifyUnlisten();
+
+    const jsonMatch = classifyResult.content.match(/\{[\s\S]*?\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return parsed.needsClarification === true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 function combineUsage(a?: UsageData, b?: UsageData): UsageData | undefined {
@@ -911,13 +918,9 @@ Return your response in this exact JSON format:
     ];
 
     const streamId = uuidv4();
-    const unlisten = await tauri.onStreamToken(streamId, (token) => {
-      if (!token.done) {
-        set((s) => ({
-          currentStreamContent: s.currentStreamContent + token.token,
-        }));
-      }
-    });
+    const unlisten = await tauri.onStreamToken(streamId, createBatchedTokenHandler((buffered) => {
+      set((s) => ({ currentStreamContent: s.currentStreamContent + buffered }));
+    }));
 
     set({ currentStreamId: streamId, currentStreamContent: '' });
 
@@ -1034,16 +1037,14 @@ Return your response in this exact JSON format:
         parallelStreams: { ...s.parallelStreams, [modelIndex]: '' },
       }));
 
-      const modelUnlisten = await tauri.onStreamToken(modelStreamId, (token) => {
-        if (!token.done && !token.error) {
-          set((s) => ({
-            parallelStreams: {
-              ...s.parallelStreams,
-              [modelIndex]: (s.parallelStreams[modelIndex] || '') + token.token,
-            },
-          }));
-        }
-      });
+      const modelUnlisten = await tauri.onStreamToken(modelStreamId, createBatchedTokenHandler((buffered) => {
+        set((s) => ({
+          parallelStreams: {
+            ...s.parallelStreams,
+            [modelIndex]: (s.parallelStreams[modelIndex] || '') + buffered,
+          },
+        }));
+      }));
 
       try {
         // Get system prompt from master's generated prompts, or fallback
@@ -1156,13 +1157,9 @@ Return your response in this exact JSON format:
     const verdictStreamId = uuidv4();
     set({ currentStreamId: verdictStreamId, currentStreamContent: '' });
 
-    const verdictUnlisten = await tauri.onStreamToken(verdictStreamId, (token) => {
-      if (!token.done && !token.error) {
-        set((s) => ({
-          currentStreamContent: s.currentStreamContent + token.token,
-        }));
-      }
-    });
+    const verdictUnlisten = await tauri.onStreamToken(verdictStreamId, createBatchedTokenHandler((buffered) => {
+      set((s) => ({ currentStreamContent: s.currentStreamContent + buffered }));
+    }));
 
     // Use summarizer's custom system prompt, or fall back to depth-based defaults
     const verdictSystemPrompt = summarizerModel?.systemPrompt
@@ -1235,13 +1232,9 @@ async function runOrchestratorChat(
     const streamId = uuidv4();
     set({ currentStreamId: streamId, currentStreamContent: '' });
 
-    const unlisten = await tauri.onStreamToken(streamId, (token) => {
-      if (!token.done && !token.error) {
-        set((s) => ({
-          currentStreamContent: s.currentStreamContent + token.token,
-        }));
-      }
-    });
+    const unlisten = await tauri.onStreamToken(streamId, createBatchedTokenHandler((buffered) => {
+      set((s) => ({ currentStreamContent: s.currentStreamContent + buffered }));
+    }));
 
     const result = await tauri.streamChat(
       masterModel.provider,

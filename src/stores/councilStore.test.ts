@@ -117,10 +117,12 @@ describe('councilStore', () => {
 
     uuidMocks.v4
       .mockReturnValueOnce('model-stream')
+      .mockReturnValueOnce('classify-stream')
       .mockReturnValueOnce('verdict-stream');
 
     tauriMocks.streamChat
       .mockResolvedValueOnce({ content: 'model response', usage: usage(1, 2) })
+      .mockResolvedValueOnce({ content: '{"needsClarification": false}' })
       .mockResolvedValueOnce({ content: 'master verdict', usage: usage(3, 4) });
 
     const getApiKey = vi.fn(async () => 'api-key');
