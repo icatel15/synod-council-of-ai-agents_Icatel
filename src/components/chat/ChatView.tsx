@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { Send } from 'lucide-react';
+import { Send, ArrowDownUp, Layers } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import UserMessage from './UserMessage';
 import ModelResponse from './ModelResponse';
@@ -17,6 +17,113 @@ import { useSessionStore } from '../../stores/sessionStore';
 import { getApiKey, streamChat, onStreamToken } from '../../lib/tauri';
 import type { DiscussionEntry, Provider, Session } from '../../types';
 
+// ─── StreamingSection ────────────────────────────────────────────────
+// Isolated component that subscribes to streaming-related store state.
+// Only this component re-renders on each token — the parent ChatView
+// and the historical entries list are untouched during streaming.
+interface StreamingSectionProps {
+  entries: DiscussionEntry[];
+}
+
+const StreamingSection = memo(function StreamingSection({ entries }: StreamingSectionProps) {
+  const councilState = useCouncilStore((s) => s.state);
+  const currentStreamContent = useCouncilStore((s) => s.currentStreamContent);
+  const currentModelIndex = useCouncilStore((s) => s.currentModelIndex);
+  const waitingForClarification = useCouncilStore((s) => s.waitingForClarification);
+  const clarifyingExchanges = useCouncilStore((s) => s.clarifyingExchanges);
+  const submitClarification = useCouncilStore((s) => s.submitClarification);
+  const followUpInProgress = useCouncilStore((s) => s.followUpInProgress);
+  const councilError = useCouncilStore((s) => s.error);
+  const councilModels = useSettingsStore((s) => s.settings.councilModels);
+  const parallelStreams = useCouncilStore((s) => s.parallelStreams);
+
+  return (
+    <>
+      {councilState === 'generating_system_prompts' && (
+        <div className="px-6 py-4">
+          <ThinkingIndicator modelName="Generating system prompts" />
+        </div>
+      )}
+
+      {councilState === 'model_turn' && currentModelIndex >= 0 && (
+        <ModelResponse
+          provider={councilModels[currentModelIndex]?.provider || ''}
+          model={councilModels[currentModelIndex]?.model || ''}
+          displayName={councilModels[currentModelIndex]?.displayName || ''}
+          content={currentStreamContent}
+          isStreaming={true}
+          isThinking={!currentStreamContent}
+        />
+      )}
+
+      {councilState === 'parallel_model_turns' && (
+        <>
+          {councilModels.map((model, idx) => {
+            const streamContent = parallelStreams[idx];
+            // Skip models not yet started or already completed (moved to entries)
+            if (streamContent === undefined) return null;
+            return (
+              <ModelResponse
+                key={`parallel-${idx}`}
+                provider={model.provider}
+                model={model.model}
+                displayName={model.displayName}
+                content={streamContent}
+                isStreaming={true}
+                isThinking={!streamContent}
+              />
+            );
+          })}
+        </>
+      )}
+
+      {councilState === 'clarifying_qa' && waitingForClarification && (
+        <ClarifyingQuestion
+          question={
+            clarifyingExchanges[clarifyingExchanges.length - 1]?.question || ''
+          }
+          onAnswer={submitClarification}
+        />
+      )}
+
+      {councilState === 'master_verdict' && (
+        <MasterVerdict
+          content={currentStreamContent}
+          isStreaming={true}
+          isThinking={!currentStreamContent}
+        />
+      )}
+
+      {councilState === 'follow_up' && followUpInProgress && (() => {
+        const lastFQ = [...entries].reverse().find(e => e.role === 'follow_up_question');
+        if (!lastFQ || lastFQ.role !== 'follow_up_question') return null;
+        return (
+          <ModelResponse
+            provider={lastFQ.targetProvider}
+            model={lastFQ.targetModel}
+            displayName={lastFQ.targetDisplayName}
+            content={currentStreamContent}
+            isStreaming={true}
+            isThinking={!currentStreamContent}
+            isFollowUp={true}
+          />
+        );
+      })()}
+
+      {councilState === 'error' && councilError && (
+        <div className="px-6 py-4">
+          <div className="p-4 rounded-[var(--radius-md)] bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800">
+            <p className="text-sm text-red-600 dark:text-red-400">
+              {councilError}
+            </p>
+          </div>
+        </div>
+      )}
+    </>
+  );
+});
+
+// ─── ChatView ────────────────────────────────────────────────────────
 export default function ChatView() {
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -29,8 +136,14 @@ export default function ChatView() {
   const [mentionQuery, setMentionQuery] = useState('');
   const [selectedMention, setSelectedMention] = useState<MentionModel | null>(null);
 
-  const council = useCouncilStore();
+  // Granular council store selectors — only re-render when these specific values change
+  const councilState = useCouncilStore((s) => s.state);
+  const councilReset = useCouncilStore((s) => s.reset);
+  const startDiscussion = useCouncilStore((s) => s.startDiscussion);
+  const sendFollowUp = useCouncilStore((s) => s.sendFollowUp);
+
   const settings = useSettingsStore((s) => s.settings);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
   const { activeSession, createSession, saveCurrentSession, updateActiveSession } =
     useSessionStore();
   const sessionLoading = useSessionStore((s) => s.loading);
@@ -60,12 +173,34 @@ export default function ChatView() {
     entriesRef.current = entries;
   }, [entries]);
 
-  // Auto-scroll to bottom
+  // Auto-scroll on entries change or state transition (infrequent)
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [entries, council.currentStreamContent, council.state]);
+  }, [entries, councilState]);
+
+  // Non-rendering subscription for scroll-on-stream (rAF-throttled).
+  // This fires the callback when currentStreamContent changes but does NOT
+  // cause a React re-render — ideal for scroll-follow during streaming.
+  useEffect(() => {
+    let rafId = 0;
+    let prevContent = useCouncilStore.getState().currentStreamContent;
+    let prevParallel = useCouncilStore.getState().parallelStreams;
+    const unsub = useCouncilStore.subscribe((state) => {
+      if (state.currentStreamContent !== prevContent || state.parallelStreams !== prevParallel) {
+        prevContent = state.currentStreamContent;
+        prevParallel = state.parallelStreams;
+        cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(() => {
+          if (scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          }
+        });
+      }
+    });
+    return () => { unsub(); cancelAnimationFrame(rafId); };
+  }, []);
 
   // Incremental auto-save after each entry
   const handleEntryComplete = useCallback(
@@ -130,7 +265,7 @@ export default function ChatView() {
     // Works both when discussion just finished (state 'complete') and when
     // a completed session was loaded from disk (state 'idle' but entries have a verdict)
     const hasVerdict = activeSession && entriesRef.current.some(e => e.role === 'master_verdict');
-    if (selectedMention && hasVerdict && (council.state === 'complete' || council.state === 'idle')) {
+    if (selectedMention && hasVerdict && (councilState === 'complete' || councilState === 'idle')) {
       const mention = selectedMention;
       setSelectedMention(null);
       setInput('');
@@ -144,7 +279,7 @@ export default function ChatView() {
       if (!followUpText) return;
 
       // Pass full discussion history so the model has complete context
-      await council.sendFollowUp(
+      await sendFollowUp(
         mention.provider,
         mention.model,
         mention.displayName,
@@ -166,7 +301,7 @@ export default function ChatView() {
 
     // === No @mention but session has a verdict → prompt user to pick a model ===
     // Instead of starting a brand-new council, keep them in the same session
-    if (!selectedMention && hasVerdict && (council.state === 'complete' || council.state === 'idle')) {
+    if (!selectedMention && hasVerdict && (councilState === 'complete' || councilState === 'idle')) {
       // Show the mention dropdown — question stays in input, user picks a model
       setShowMentionDropdown(true);
       setMentionQuery('');
@@ -175,9 +310,9 @@ export default function ChatView() {
 
     // === New council session path (only when there's no active verdict) ===
     // Allow submission from terminal states (complete, error), not just idle
-    if (council.state !== 'idle' && council.state !== 'complete' && council.state !== 'error') return;
-    if (council.state !== 'idle') {
-      council.reset();
+    if (councilState !== 'idle' && councilState !== 'complete' && councilState !== 'error') return;
+    if (councilState !== 'idle') {
+      councilReset();
     }
 
     setInput('');
@@ -196,6 +331,7 @@ export default function ChatView() {
         models: settings.councilModels,
         masterModel: settings.masterModel,
         systemPromptMode: settings.systemPromptMode,
+        discussionMode: settings.discussionMode,
       },
       discussion: [],
     };
@@ -213,12 +349,13 @@ export default function ChatView() {
     generateSessionTitle(question);
 
     // Run the council discussion (each entry auto-saves via handleEntryComplete)
-    await council.startDiscussion(
+    await startDiscussion(
       question,
       settings.councilModels,
       settings.masterModel,
       settings.systemPromptMode,
       settings.discussionDepth,
+      settings.discussionMode,
       getApiKey,
       handleEntryComplete,
     );
@@ -237,7 +374,7 @@ export default function ChatView() {
     setInput(value);
 
     // Only show @ dropdown when session is complete (verdict delivered)
-    if (council.state === 'complete' || (council.state === 'idle' && entries.length > 0)) {
+    if (councilState === 'complete' || (councilState === 'idle' && entries.length > 0)) {
       // Check for @ trigger: look for '@' followed by optional filter text
       const atMatch = value.match(/@(\w*)$/);
       if (atMatch) {
@@ -282,7 +419,7 @@ export default function ChatView() {
     }
   };
 
-  const isProcessing = council.state !== 'idle' && council.state !== 'complete' && council.state !== 'error';
+  const isProcessing = councilState !== 'idle' && councilState !== 'complete' && councilState !== 'error';
   const hasModels = settings.councilModels.length > 0;
   const canFollowUp = activeSession != null && entries.some(e => e.role === 'master_verdict');
 
@@ -290,7 +427,7 @@ export default function ChatView() {
     <div className="flex flex-col h-full">
       {/* Messages area */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        {entries.length === 0 && council.state === 'idle' && !sessionLoading ? (
+        {entries.length === 0 && councilState === 'idle' && !sessionLoading ? (
           sessionError ? (
             <div className="flex flex-col items-center justify-center h-full px-6">
               <div className="text-center max-w-lg">
@@ -362,6 +499,7 @@ export default function ChatView() {
                       model={entry.model}
                       displayName={entry.displayName}
                       content={entry.content}
+                      systemPrompt={entry.systemPrompt}
                       clarifyingExchange={entry.clarifyingExchange}
                     />
                   );
@@ -397,70 +535,8 @@ export default function ChatView() {
               })}
             </AnimatePresence>
 
-            {/* Active streaming content */}
-            {council.state === 'generating_system_prompts' && (
-              <div className="px-6 py-4">
-                <ThinkingIndicator modelName="Generating system prompts" />
-              </div>
-            )}
-
-            {council.state === 'model_turn' && council.currentModelIndex >= 0 && (
-              <ModelResponse
-                provider={settings.councilModels[council.currentModelIndex]?.provider || ''}
-                model={settings.councilModels[council.currentModelIndex]?.model || ''}
-                displayName={
-                  settings.councilModels[council.currentModelIndex]?.displayName || ''
-                }
-                content={council.currentStreamContent}
-                isStreaming={true}
-                isThinking={!council.currentStreamContent}
-              />
-            )}
-
-            {council.state === 'clarifying_qa' && council.waitingForClarification && (
-              <ClarifyingQuestion
-                question={
-                  council.clarifyingExchanges[council.clarifyingExchanges.length - 1]
-                    ?.question || ''
-                }
-                onAnswer={council.submitClarification}
-              />
-            )}
-
-            {council.state === 'master_verdict' && (
-              <MasterVerdict
-                content={council.currentStreamContent}
-                isStreaming={true}
-                isThinking={!council.currentStreamContent}
-              />
-            )}
-
-            {council.state === 'follow_up' && council.followUpInProgress && (() => {
-              // Find the last follow-up question entry to get the target model info
-              const lastFQ = [...entries].reverse().find(e => e.role === 'follow_up_question');
-              if (!lastFQ || lastFQ.role !== 'follow_up_question') return null;
-              return (
-                <ModelResponse
-                  provider={lastFQ.targetProvider}
-                  model={lastFQ.targetModel}
-                  displayName={lastFQ.targetDisplayName}
-                  content={council.currentStreamContent}
-                  isStreaming={true}
-                  isThinking={!council.currentStreamContent}
-                  isFollowUp={true}
-                />
-              );
-            })()}
-
-            {council.state === 'error' && council.error && (
-              <div className="px-6 py-4">
-                <div className="p-4 rounded-[var(--radius-md)] bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800">
-                  <p className="text-sm text-red-600 dark:text-red-400">
-                    {council.error}
-                  </p>
-                </div>
-              </div>
-            )}
+            {/* Streaming content — isolated to prevent re-render cascade */}
+            <StreamingSection entries={entries} />
           </div>
         )}
       </div>
@@ -513,9 +589,40 @@ export default function ChatView() {
               <Send size={16} />
             </Button>
           </div>
+          {/* Discussion mode toggle — only visible before a discussion starts */}
+          {!isProcessing && !canFollowUp && (
+            <div className="mt-2 flex items-center justify-center gap-1">
+              <button
+                onClick={() => updateSettings({ discussionMode: 'sequential' })}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                  settings.discussionMode === 'sequential'
+                    ? 'bg-[var(--color-accent-light)] text-[var(--color-accent)] border border-[var(--color-accent)]'
+                    : 'text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] border border-transparent hover:border-[var(--color-border-primary)]'
+                }`}
+              >
+                <ArrowDownUp size={12} />
+                Sequential
+              </button>
+              <button
+                onClick={() => updateSettings({ discussionMode: 'parallel' })}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                  settings.discussionMode === 'parallel'
+                    ? 'bg-[var(--color-accent-light)] text-[var(--color-accent)] border border-[var(--color-accent)]'
+                    : 'text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] border border-transparent hover:border-[var(--color-border-primary)]'
+                }`}
+              >
+                <Layers size={12} />
+                Parallel
+              </button>
+            </div>
+          )}
           {isProcessing && (
             <p className="mt-2 text-xs text-center text-[var(--color-text-tertiary)]">
-              {council.state === 'follow_up' ? 'Getting follow-up response...' : 'Council is deliberating...'}
+              {councilState === 'follow_up'
+                ? 'Getting follow-up response...'
+                : councilState === 'parallel_model_turns'
+                  ? 'Council models are deliberating in parallel...'
+                  : 'Council is deliberating...'}
             </p>
           )}
         </div>

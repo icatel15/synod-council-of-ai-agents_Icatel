@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, ChevronLeft, Check } from 'lucide-react';
+import { ChevronRight, ChevronLeft, Check, X } from 'lucide-react';
 import Button from '../common/Button';
+import OpenRouterModelSearch from '../common/OpenRouterModelSearch';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { PROVIDERS, getProviderColor } from '../../types';
 import type { Provider, ModelConfig, MasterModelConfig } from '../../types';
@@ -20,6 +21,7 @@ export default function SetupWizard() {
     provider: 'anthropic',
     model: 'claude-opus-4-6',
   });
+  const [orWebSearch, setOrWebSearch] = useState(false);
 
   const stepIndex = steps.indexOf(currentStep);
 
@@ -154,44 +156,90 @@ export default function SetupWizard() {
                         />
                         {provider.name}
                       </h3>
-                      <div className="space-y-1">
-                        {provider.models.map((model) => {
-                          const isSelected = selectedModels.some(
-                            (m) =>
-                              m.provider === provider.id &&
-                              m.model === model.id,
-                          );
-                          return (
-                            <button
-                              key={model.id}
-                              onClick={() =>
-                                toggleModel(provider.id, model.id, model.name)
-                              }
-                              className={`w-full flex items-center justify-between px-3 py-2 rounded-[var(--radius-md)] border text-sm transition-all ${
-                                isSelected
-                                  ? 'border-[var(--color-accent)] bg-[var(--color-accent-light)]'
-                                  : 'border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)]'
-                              }`}
-                            >
-                              <span
-                                className={
-                                  isSelected
-                                    ? 'text-[var(--color-accent)] font-medium'
-                                    : 'text-[var(--color-text-primary)]'
-                                }
+                      {provider.id === 'openrouter' ? (
+                        <div className="space-y-1">
+                          {selectedModels
+                            .filter((m) => m.provider === 'openrouter')
+                            .map((m) => (
+                              <div
+                                key={m.model}
+                                className="flex items-center justify-between px-3 py-2 rounded-[var(--radius-md)] border border-[var(--color-accent)] bg-[var(--color-accent-light)] text-sm"
                               >
-                                {model.name}
-                              </span>
-                              {isSelected && (
-                                <Check
-                                  size={16}
-                                  className="text-[var(--color-accent)]"
-                                />
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
+                                <span className="text-[var(--color-accent)] font-medium truncate">
+                                  {m.displayName}
+                                </span>
+                                <button
+                                  onClick={() =>
+                                    toggleModel('openrouter', m.model, m.displayName)
+                                  }
+                                  className="text-[var(--color-text-tertiary)] hover:text-[var(--color-error)] transition-colors flex-shrink-0 ml-2"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+                            ))}
+                          <label className="flex items-center gap-2 px-1 py-1">
+                            <input
+                              type="checkbox"
+                              checked={orWebSearch}
+                              onChange={(e) => setOrWebSearch(e.target.checked)}
+                              className="rounded border-[var(--color-border-primary)]"
+                            />
+                            <span className="text-xs text-[var(--color-text-secondary)]">
+                              Enable web search
+                            </span>
+                            <span className="text-xs text-[var(--color-text-tertiary)]">
+                              (~$0.02/request)
+                            </span>
+                          </label>
+                          <OpenRouterModelSearch
+                            onSelect={(model) => {
+                              const modelId = orWebSearch ? `${model.id}:online` : model.id;
+                              const displayName = orWebSearch ? `${model.name} (Web)` : model.name;
+                              toggleModel('openrouter', modelId, displayName);
+                            }}
+                          />
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          {provider.models.map((model) => {
+                            const isSelected = selectedModels.some(
+                              (m) =>
+                                m.provider === provider.id &&
+                                m.model === model.id,
+                            );
+                            return (
+                              <button
+                                key={model.id}
+                                onClick={() =>
+                                  toggleModel(provider.id, model.id, model.name)
+                                }
+                                className={`w-full flex items-center justify-between px-3 py-2 rounded-[var(--radius-md)] border text-sm transition-all ${
+                                  isSelected
+                                    ? 'border-[var(--color-accent)] bg-[var(--color-accent-light)]'
+                                    : 'border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)]'
+                                }`}
+                              >
+                                <span
+                                  className={
+                                    isSelected
+                                      ? 'text-[var(--color-accent)] font-medium'
+                                      : 'text-[var(--color-text-primary)]'
+                                  }
+                                >
+                                  {model.name}
+                                </span>
+                                {isSelected && (
+                                  <Check
+                                    size={16}
+                                    className="text-[var(--color-accent)]"
+                                  />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -221,7 +269,7 @@ export default function SetupWizard() {
                 </p>
 
                 <div className="space-y-4 mb-6 max-h-[350px] overflow-y-auto">
-                  {[...new Set([...selectedProviders, masterModel.provider])].map(
+                  {[...new Set(selectedProviders)].map(
                     (providerId) => {
                       const provider = PROVIDERS.find((p) => p.id === providerId)!;
                       return (
@@ -269,18 +317,31 @@ export default function SetupWizard() {
                 </p>
 
                 <div className="space-y-2 mb-6 max-h-[350px] overflow-y-auto">
-                  {PROVIDERS.flatMap((provider) =>
-                    provider.models.map((model) => {
+                  {(() => {
+                    // Build master model candidates: static provider models + selected OR models
+                    const candidates: { provider: Provider; model: string; name: string; providerName: string }[] = [];
+                    for (const provider of PROVIDERS) {
+                      if (provider.models.length > 0) {
+                        for (const model of provider.models) {
+                          candidates.push({ provider: provider.id, model: model.id, name: model.name, providerName: provider.name });
+                        }
+                      } else if (provider.id === 'openrouter') {
+                        for (const m of selectedModels.filter((sm) => sm.provider === 'openrouter')) {
+                          candidates.push({ provider: 'openrouter', model: m.model, name: m.displayName, providerName: 'OpenRouter' });
+                        }
+                      }
+                    }
+                    return candidates.map((c) => {
                       const isSelected =
-                        masterModel.provider === provider.id &&
-                        masterModel.model === model.id;
+                        masterModel.provider === c.provider &&
+                        masterModel.model === c.model;
                       return (
                         <button
-                          key={`${provider.id}:${model.id}`}
+                          key={`${c.provider}:${c.model}`}
                           onClick={() =>
                             setMasterModel({
-                              provider: provider.id,
-                              model: model.id,
+                              provider: c.provider,
+                              model: c.model,
                             })
                           }
                           className={`w-full flex items-center justify-between px-3 py-2.5 rounded-[var(--radius-md)] border text-sm transition-all ${
@@ -293,7 +354,7 @@ export default function SetupWizard() {
                             <div
                               className="w-2 h-2 rounded-full"
                               style={{
-                                backgroundColor: getProviderColor(provider.id),
+                                backgroundColor: getProviderColor(c.provider),
                               }}
                             />
                             <span
@@ -303,10 +364,10 @@ export default function SetupWizard() {
                                   : 'text-[var(--color-text-primary)]'
                               }
                             >
-                              {model.name}
+                              {c.name}
                             </span>
                             <span className="text-xs text-[var(--color-text-tertiary)]">
-                              ({provider.name})
+                              ({c.providerName})
                             </span>
                           </div>
                           {isSelected && (
@@ -317,8 +378,8 @@ export default function SetupWizard() {
                           )}
                         </button>
                       );
-                    }),
-                  )}
+                    });
+                  })()}
                 </div>
 
                 <div className="flex justify-between">

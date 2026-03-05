@@ -1,9 +1,10 @@
-import { create } from 'zustand';
+import { create, type StoreApi } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
 import type {
   CouncilState,
   DiscussionEntry,
   DiscussionDepth,
+  DiscussionMode,
   ModelConfig,
   MasterModelConfig,
   ChatMessage,
@@ -24,6 +25,12 @@ interface CouncilStoreState {
   followUpInProgress: boolean;
   error: string | null;
 
+  // Parallel mode state
+  parallelStreams: Record<number, string>;
+  parallelStreamIds: Record<number, string>;
+  parallelCompletedCount: number;
+  parallelTotalCount: number;
+
   // Actions
   startDiscussion: (
     userQuestion: string,
@@ -31,6 +38,7 @@ interface CouncilStoreState {
     masterModel: MasterModelConfig,
     systemPromptMode: 'upfront' | 'dynamic',
     discussionDepth: DiscussionDepth,
+    discussionMode: DiscussionMode,
     getApiKey: (service: string) => Promise<string | null>,
     onEntryComplete: (entry: DiscussionEntry) => void,
   ) => Promise<void>;
@@ -59,6 +67,10 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
   waitingForClarification: false,
   followUpInProgress: false,
   error: null,
+  parallelStreams: {},
+  parallelStreamIds: {},
+  parallelCompletedCount: 0,
+  parallelTotalCount: 0,
 
   startDiscussion: async (
     userQuestion,
@@ -66,6 +78,7 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
     masterModel,
     systemPromptMode,
     discussionDepth,
+    discussionMode,
     getApiKey,
     onEntryComplete,
   ) => {
@@ -73,6 +86,14 @@ export const useCouncilStore = create<CouncilStoreState>((set, get) => ({
 
     // Add user entry
     onEntryComplete({ role: 'user', content: userQuestion });
+
+    // Branch: parallel mode uses a completely different flow
+    if (discussionMode === 'parallel') {
+      await runParallelDiscussion(
+        userQuestion, models, masterModel, discussionDepth, getApiKey, onEntryComplete, set, get,
+      );
+      return;
+    }
 
     const discussionSoFar: DiscussionEntry[] = [
       { role: 'user', content: userQuestion },
@@ -551,6 +572,10 @@ ${JSON.stringify(
       waitingForClarification: false,
       followUpInProgress: false,
       error: null,
+      parallelStreams: {},
+      parallelStreamIds: {},
+      parallelCompletedCount: 0,
+      parallelTotalCount: 0,
     });
   },
 }));
@@ -677,4 +702,343 @@ As the master judge, please synthesize all opinions and deliver your FINAL VERDI
 4. A clear, actionable recommendation
 
 Provide your final verdict with clear reasoning.`;
+}
+
+function getDefaultParallelPrompt(model: ModelConfig, depth: DiscussionDepth): string {
+  const depthInstruction = depth === 'concise'
+    ? 'Be concise and direct. Provide 2-3 key points maximum. Skip lengthy explanations and focus on actionable insights.'
+    : 'Be thorough, factual, and specific.';
+
+  return `You are ${model.displayName}, a member of an AI council helping a user make an informed decision. You are responding INDEPENDENTLY — you will NOT see other council members' responses. Provide your own unique perspective, analysis, and recommendation based solely on the user's question. ${depthInstruction}`;
+}
+
+// ─── Parallel Discussion Flow ─────────────────────────────────────────
+// Dispatches all council models simultaneously. Each model responds
+// independently without seeing others' thinking, then the orchestrator
+// synthesizes a verdict.
+
+type SetState = StoreApi<CouncilStoreState>['setState'];
+type GetState = StoreApi<CouncilStoreState>['getState'];
+
+async function runParallelDiscussion(
+  userQuestion: string,
+  models: ModelConfig[],
+  masterModel: MasterModelConfig,
+  discussionDepth: DiscussionDepth,
+  getApiKey: (service: string) => Promise<string | null>,
+  onEntryComplete: (entry: DiscussionEntry) => void,
+  set: SetState,
+  get: GetState,
+): Promise<void> {
+  const discussionSoFar: DiscussionEntry[] = [
+    { role: 'user', content: userQuestion },
+  ];
+
+  let masterPromptGenUsage: UsageData | undefined;
+
+  // ── Step 1: Generate system prompts + optional clarifying questions ──
+  set({ state: 'generating_system_prompts' });
+
+  try {
+    const masterApiKey = await getApiKey(
+      `com.council-of-ai-agents.${masterModel.provider}`,
+    );
+    if (!masterApiKey) {
+      set({ state: 'error', error: `No API key found for master model provider (${masterModel.provider})` });
+      return;
+    }
+
+    const promptGenMessages: ChatMessage[] = [
+      {
+        role: 'user',
+        content: `You are the orchestrator of a council of AI models helping a user make an informed decision. The user's question is:
+
+"${userQuestion}"
+
+The following AI models will ALL respond to this question SIMULTANEOUSLY (in parallel). They will NOT see each other's responses:
+${models.map((m, i) => `${i + 1}. ${m.displayName} (${m.provider})`).join('\n')}
+
+Your tasks:
+1. If the user's question is ambiguous or missing important context, include up to 2 clarifying questions in the "clarifyingQuestions" array. If the question is clear, leave the array empty.
+2. Generate a specific, tailored system prompt for EACH council model. Since models respond independently, each prompt should encourage unique perspectives and independent analysis.
+${discussionDepth === 'concise' ? '\nIMPORTANT: Instruct each model to keep responses brief and focused — 2-3 key points maximum.\n' : ''}
+Return your response in this exact JSON format:
+{
+  "clarifyingQuestions": [],
+  "prompts": ${JSON.stringify(
+    models.reduce(
+      (acc, m) => ({
+        ...acc,
+        [`${m.provider}:${m.model}`]: 'system prompt here',
+      }),
+      {},
+    ),
+    null,
+    4,
+  )}
+}`,
+      },
+    ];
+
+    const streamId = uuidv4();
+    const unlisten = await tauri.onStreamToken(streamId, (token) => {
+      if (!token.done) {
+        set((s) => ({
+          currentStreamContent: s.currentStreamContent + token.token,
+        }));
+      }
+    });
+
+    set({ currentStreamId: streamId, currentStreamContent: '' });
+
+    const result = await tauri.streamChat(
+      masterModel.provider,
+      masterModel.model,
+      promptGenMessages,
+      'You are an AI orchestrator. Generate system prompts and optional clarifying questions. Return valid JSON only.',
+      masterApiKey,
+      streamId,
+    );
+
+    unlisten();
+    set({ currentStreamId: null, currentStreamContent: '' });
+    masterPromptGenUsage = result.usage;
+
+    // Parse the combined response
+    let clarifyingQuestions: string[] = [];
+    const promptMap = new Map<string, string>();
+
+    try {
+      const jsonMatch = result.content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+
+        // Extract clarifying questions
+        if (Array.isArray(parsed.clarifyingQuestions) && parsed.clarifyingQuestions.length > 0) {
+          clarifyingQuestions = parsed.clarifyingQuestions;
+        }
+
+        // Extract prompts
+        const prompts = parsed.prompts || parsed;
+        for (const [key, value] of Object.entries(prompts)) {
+          if (key !== 'clarifyingQuestions') {
+            promptMap.set(key, value as string);
+          }
+        }
+      }
+    } catch {
+      console.warn('Failed to parse parallel prompt response, using defaults');
+    }
+
+    set({ systemPrompts: promptMap });
+
+    // ── Step 2: Handle clarifying questions (if any) ──
+    if (clarifyingQuestions.length > 0) {
+      const combinedQuestion = clarifyingQuestions.join('\n\n');
+
+      set({
+        state: 'clarifying_qa',
+        waitingForClarification: true,
+        clarifyingExchanges: [{ question: combinedQuestion, answer: '' }],
+      });
+
+      // Wait for user's clarification answer
+      await new Promise<void>((resolve) => {
+        const checkInterval = setInterval(() => {
+          const current = get();
+          if (!current.waitingForClarification) {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 200);
+      });
+    }
+
+    // ── Step 3: Pre-resolve all API keys (fail fast) ──
+    const uniqueProviders = [...new Set(models.map((m) => m.provider))];
+    const apiKeyMap = new Map<string, string>();
+
+    for (const provider of uniqueProviders) {
+      const key = await getApiKey(`com.council-of-ai-agents.${provider}`);
+      if (!key) {
+        set({ state: 'error', error: `No API key found for provider: ${provider}` });
+        return;
+      }
+      apiKeyMap.set(provider, key);
+    }
+
+    // ── Step 4: Dispatch all models in parallel ──
+    set({
+      state: 'parallel_model_turns',
+      parallelStreams: {},
+      parallelStreamIds: {},
+      parallelCompletedCount: 0,
+      parallelTotalCount: models.length,
+    });
+
+    // Build context that all models share (user question + optional clarification)
+    const clarificationContext = get().clarifyingExchanges;
+    const baseMessages: ChatMessage[] = [
+      { role: 'user', content: userQuestion },
+    ];
+
+    if (clarificationContext.length > 0 && clarificationContext[0].answer) {
+      baseMessages.push({
+        role: 'user',
+        content: `Additional context from clarification:\nQ: ${clarificationContext[0].question}\nA: ${clarificationContext[0].answer}`,
+      });
+    }
+
+    const modelPromises = models.map(async (model, modelIndex) => {
+      const apiKey = apiKeyMap.get(model.provider)!;
+      const modelStreamId = uuidv4();
+
+      // Register stream
+      set((s) => ({
+        parallelStreamIds: { ...s.parallelStreamIds, [modelIndex]: modelStreamId },
+        parallelStreams: { ...s.parallelStreams, [modelIndex]: '' },
+      }));
+
+      const modelUnlisten = await tauri.onStreamToken(modelStreamId, (token) => {
+        if (!token.done && !token.error) {
+          set((s) => ({
+            parallelStreams: {
+              ...s.parallelStreams,
+              [modelIndex]: (s.parallelStreams[modelIndex] || '') + token.token,
+            },
+          }));
+        }
+      });
+
+      try {
+        // Get system prompt from master's generated prompts, or fallback
+        const systemPromptKey = `${model.provider}:${model.model}`;
+        const systemPrompt =
+          get().systemPrompts.get(systemPromptKey) || getDefaultParallelPrompt(model, discussionDepth);
+
+        const result = await tauri.streamChat(
+          model.provider,
+          model.model,
+          baseMessages,
+          systemPrompt,
+          apiKey,
+          modelStreamId,
+        );
+
+        modelUnlisten();
+
+        // Create entry and emit immediately (progressive emission)
+        const entry: DiscussionEntry = {
+          role: 'model',
+          provider: model.provider,
+          model: model.model,
+          displayName: model.displayName,
+          systemPrompt,
+          content: result.content,
+          usage: result.usage,
+        };
+        discussionSoFar.push(entry);
+        onEntryComplete(entry);
+
+        // Remove from parallelStreams, increment completed count
+        set((s) => {
+          const streams = { ...s.parallelStreams };
+          delete streams[modelIndex];
+          const ids = { ...s.parallelStreamIds };
+          delete ids[modelIndex];
+          return {
+            parallelStreams: streams,
+            parallelStreamIds: ids,
+            parallelCompletedCount: s.parallelCompletedCount + 1,
+          };
+        });
+      } catch (err) {
+        modelUnlisten();
+
+        // Error entry — doesn't abort other models
+        const entry: DiscussionEntry = {
+          role: 'model',
+          provider: model.provider,
+          model: model.model,
+          displayName: model.displayName,
+          content: `[Error: Failed to get response - ${err}]`,
+        };
+        discussionSoFar.push(entry);
+        onEntryComplete(entry);
+
+        set((s) => {
+          const streams = { ...s.parallelStreams };
+          delete streams[modelIndex];
+          const ids = { ...s.parallelStreamIds };
+          delete ids[modelIndex];
+          return {
+            parallelStreams: streams,
+            parallelStreamIds: ids,
+            parallelCompletedCount: s.parallelCompletedCount + 1,
+          };
+        });
+      }
+    });
+
+    // Wait for ALL models to complete (regardless of individual failures)
+    await Promise.allSettled(modelPromises);
+
+    // Clear parallel state
+    set({
+      parallelStreams: {},
+      parallelStreamIds: {},
+    });
+
+    // ── Step 5: Master verdict (reuses existing logic) ──
+    set({ state: 'master_verdict', currentModelIndex: -1 });
+
+    const verdictMessages: ChatMessage[] = [
+      {
+        role: 'user',
+        content: buildMasterVerdictPrompt(userQuestion, discussionSoFar),
+      },
+    ];
+
+    const verdictStreamId = uuidv4();
+    set({ currentStreamId: verdictStreamId, currentStreamContent: '' });
+
+    const verdictUnlisten = await tauri.onStreamToken(verdictStreamId, (token) => {
+      if (!token.done && !token.error) {
+        set((s) => ({
+          currentStreamContent: s.currentStreamContent + token.token,
+        }));
+      }
+    });
+
+    const masterSystemPrompt = discussionDepth === 'concise'
+      ? `You are the master AI judge in a council of AI models. Each model responded INDEPENDENTLY to the user's question without seeing each other's responses. Deliver a brief, focused verdict in 3-5 sentences. Highlight key agreements, disagreements, and your recommended action.`
+      : `You are the master AI judge in a council of AI models. Each model responded INDEPENDENTLY to the user's question without seeing each other's responses. Your job is to synthesize all independent perspectives, identify genuine consensus vs. coincidental agreement, resolve disagreements, and deliver a clear, actionable final verdict. Structure your response with clear sections.`;
+
+    const verdictResult = await tauri.streamChat(
+      masterModel.provider,
+      masterModel.model,
+      verdictMessages,
+      masterSystemPrompt,
+      masterApiKey,
+      verdictStreamId,
+    );
+
+    verdictUnlisten();
+    set({ currentStreamId: null, currentStreamContent: '' });
+
+    const masterTotalUsage = combineUsage(masterPromptGenUsage, verdictResult.usage);
+
+    const verdictEntry: DiscussionEntry = {
+      role: 'master_verdict',
+      provider: masterModel.provider,
+      model: masterModel.model,
+      content: verdictResult.content,
+      usage: masterTotalUsage,
+    };
+    onEntryComplete(verdictEntry);
+
+    set({ state: 'complete' });
+  } catch (err) {
+    set({ state: 'error', error: `Parallel discussion failed: ${err}` });
+  }
 }

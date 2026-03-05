@@ -1,5 +1,5 @@
 import { useSettingsStore } from '../../stores/settingsStore';
-import type { SystemPromptMode, DiscussionDepth } from '../../types';
+import type { SystemPromptMode, DiscussionDepth, DiscussionMode } from '../../types';
 
 export default function AdvancedSettings() {
   const { settings, updateSettings } = useSettingsStore();
@@ -34,8 +34,59 @@ export default function AdvancedSettings() {
     },
   ];
 
+  const discussionModes: { id: DiscussionMode; label: string; description: string }[] = [
+    {
+      id: 'sequential',
+      label: 'Sequential',
+      description:
+        'Models respond one at a time. Each model sees previous responses, building on the discussion.',
+    },
+    {
+      id: 'parallel',
+      label: 'Parallel',
+      description:
+        'All models respond simultaneously with independent perspectives. The orchestrator asks clarifying questions before dispatching.',
+    },
+  ];
+
+  const isParallel = settings.discussionMode === 'parallel';
+
   return (
     <div>
+      <h3 className="text-sm font-semibold text-[var(--color-text-primary)] mb-1">
+        Discussion Mode
+      </h3>
+      <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
+        How models interact during a council discussion
+      </p>
+
+      <div className="space-y-2 mb-6">
+        {discussionModes.map((dm) => (
+          <button
+            key={dm.id}
+            onClick={() => updateSettings({ discussionMode: dm.id })}
+            className={`w-full text-left p-3 rounded-[var(--radius-md)] border transition-all ${
+              settings.discussionMode === dm.id
+                ? 'border-[var(--color-accent)] bg-[var(--color-accent-light)]'
+                : 'border-[var(--color-border-primary)] hover:border-[var(--color-border-secondary)] bg-[var(--color-bg-secondary)]'
+            }`}
+          >
+            <span
+              className={`text-sm font-medium ${
+                settings.discussionMode === dm.id
+                  ? 'text-[var(--color-accent)]'
+                  : 'text-[var(--color-text-primary)]'
+              }`}
+            >
+              {dm.label}
+            </span>
+            <p className="text-xs text-[var(--color-text-tertiary)] mt-1">
+              {dm.description}
+            </p>
+          </button>
+        ))}
+      </div>
+
       <h3 className="text-sm font-semibold text-[var(--color-text-primary)] mb-1">
         Discussion Depth
       </h3>
@@ -77,7 +128,13 @@ export default function AdvancedSettings() {
         How the master model creates system prompts for council members
       </p>
 
-      <div className="space-y-2">
+      {isParallel && (
+        <p className="text-xs text-[var(--color-text-tertiary)] italic mb-3">
+          Parallel mode always generates system prompts upfront.
+        </p>
+      )}
+
+      <div className={`space-y-2 ${isParallel ? 'opacity-50 pointer-events-none' : ''}`}>
         {modes.map((mode) => (
           <button
             key={mode.id}

@@ -16,6 +16,8 @@ export type SystemPromptMode = 'upfront' | 'dynamic';
 
 export type DiscussionDepth = 'thorough' | 'concise';
 
+export type DiscussionMode = 'sequential' | 'parallel';
+
 export type ThemeMode = 'light' | 'dark' | 'system';
 
 export type CursorStyle = 'ripple' | 'breathing' | 'orbit' | 'multi';
@@ -25,6 +27,7 @@ export interface AppSettings {
   masterModel: MasterModelConfig;
   systemPromptMode: SystemPromptMode;
   discussionDepth: DiscussionDepth;
+  discussionMode: DiscussionMode;
   theme: ThemeMode;
   cursorStyle: CursorStyle;
   sessionSavePath: string | null;
@@ -98,6 +101,7 @@ export interface CouncilConfig {
   models: ModelConfig[];
   masterModel: MasterModelConfig;
   systemPromptMode: SystemPromptMode;
+  discussionMode?: DiscussionMode;
 }
 
 export interface Session {
@@ -135,6 +139,7 @@ export type CouncilState =
   | 'user_input'
   | 'generating_system_prompts'
   | 'model_turn'
+  | 'parallel_model_turns'
   | 'clarifying_qa'
   | 'master_verdict'
   | 'complete'

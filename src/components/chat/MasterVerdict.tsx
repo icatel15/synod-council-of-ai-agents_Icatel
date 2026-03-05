@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Scale, Copy, Check } from 'lucide-react';
 import StreamingText from './StreamingText';
@@ -10,11 +10,12 @@ interface MasterVerdictProps {
   isThinking?: boolean;
 }
 
-export default function MasterVerdict({
+export default memo(function MasterVerdict({
   content,
   isStreaming = false,
   isThinking = false,
 }: MasterVerdictProps) {
+  const [hasAnimated, setHasAnimated] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -22,13 +23,18 @@ export default function MasterVerdict({
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const motionProps = hasAnimated
+    ? {}
+    : {
+        initial: { opacity: 0, y: 12 },
+        animate: { opacity: 1, y: 0 },
+        transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const },
+        onAnimationComplete: () => { setHasAnimated(true); },
+      };
+
   return (
-    <motion.div
-      className="px-6 py-5"
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-    >
+    <motion.div className="px-6 py-5" {...motionProps}>
       <div className="rounded-[var(--radius-lg)] border-2 border-[var(--color-accent)] bg-[var(--color-bg-verdict)] p-5">
         <div className="flex gap-4">
           <div className="flex-shrink-0 w-9 h-9 rounded-full bg-[var(--color-accent)] flex items-center justify-center">
@@ -60,4 +66,4 @@ export default function MasterVerdict({
       </div>
     </motion.div>
   );
-}
+});
